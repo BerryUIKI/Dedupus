@@ -1,0 +1,21 @@
+[package]
+name = "dedupus_desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Dedupus Desktop Application"
+
+[lib]
+name = "dedupus_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+dedupus_core.workspace = true
+tauri = { workspace = true, features = [] }
+tauri-plugin-opener = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "dedupus_core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+blake3.workspace = true
+xxhash-rust.workspace = true
+rayon.workspace = true
+crossbeam-channel.workspace = true
+walkdir.workspace = true
+ignore.workspace = true
+memmap2.workspace = true
+trash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
