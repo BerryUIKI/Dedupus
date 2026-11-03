@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { LucideIcon } from "lucide-react";
 import {
   FolderSearch,
   Files,
@@ -114,6 +115,79 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
+
+const MODE_INFO: Record<Mode, { title: string; subtitle: string }> = {
+  duplicates: {
+    title: "Exact Duplicates",
+    subtitle:
+      "Byte-identical files detected through multi-stage hashing (size → 4 KB prefix → full BLAKE3/XXH3).",
+  },
+  similar_images: {
+    title: "Similar Images",
+    subtitle:
+      "Visually similar pictures grouped with perceptual hashing (dHash / aHash), best resolution first.",
+  },
+  similar_audio: {
+    title: "Similar Audio",
+    subtitle:
+      "Tracks clustered by duration and 128-bit acoustic energy-envelope fingerprints.",
+  },
+  similar_video: {
+    title: "Similar Video",
+    subtitle:
+      "Clips compared using keyframes sampled at 10%, 50% and 80% of the runtime.",
+  },
+  big_files: {
+    title: "Big Files",
+    subtitle: "The largest files in the selected tree, ranked by size.",
+  },
+  temp_files: {
+    title: "Temporary Files",
+    subtitle:
+      "Temp, backup, partial-download and OS junk files identified by name and extension.",
+  },
+  broken_files: {
+    title: "Broken Files",
+    subtitle:
+      "Images, archives, PDFs and audio validated for corruption; broken symlinks included.",
+  },
+  empty_files: {
+    title: "Empty Files",
+    subtitle: "Zero-byte files that are usually safe to remove.",
+  },
+  empty_folders: {
+    title: "Empty Folders",
+    subtitle: "Directories with no files left inside, scanned bottom-up.",
+  },
+};
+
+const NAV_GROUPS: {
+  label: string;
+  items: { mode: Mode; label: string; icon: LucideIcon }[];
+}[] = [
+  {
+    label: "Find duplicates",
+    items: [
+      { mode: "duplicates", label: "Exact Duplicates", icon: Files },
+      { mode: "similar_images", label: "Similar Images", icon: Images },
+      { mode: "similar_audio", label: "Similar Audio", icon: Music },
+      { mode: "similar_video", label: "Similar Video", icon: Video },
+    ],
+  },
+  {
+    label: "Analyze",
+    items: [{ mode: "big_files", label: "Big Files", icon: ArrowDownWideNarrow }],
+  },
+  {
+    label: "Clean up",
+    items: [
+      { mode: "temp_files", label: "Temp Files", icon: Eraser },
+      { mode: "broken_files", label: "Broken Files", icon: AlertTriangle },
+      { mode: "empty_files", label: "Empty Files", icon: Trash2 },
+      { mode: "empty_folders", label: "Empty Folders", icon: FolderMinus },
+    ],
+  },
+];
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("duplicates");
@@ -496,113 +570,80 @@ export default function App() {
   };
 
   return (
-    <div className="app-container">
-      {/* Top Header */}
-      <header className="app-header">
+    <div className="app-shell">
+      {/* Sidebar navigation */}
+      <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">
             <FolderSearch size={22} />
           </div>
           <div>
             <h1>Dedupus</h1>
-            <p>Fast, Modern Duplicate Finder & Disk Cleaner</p>
+            <p>Disk Cleaner</p>
           </div>
         </div>
 
-        {/* Tab switchers */}
-        <div className="tab-group">
-          <button
-            className={`tab-btn ${mode === "duplicates" ? "active" : ""}`}
-            onClick={() => {
-              setMode("duplicates");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <Files size={15} />
-            <span>Duplicates</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "similar_images" ? "active" : ""}`}
-            onClick={() => {
-              setMode("similar_images");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <Images size={15} />
-            <span>Images</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "similar_audio" ? "active" : ""}`}
-            onClick={() => {
-              setMode("similar_audio");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <Music size={15} />
-            <span>Audio</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "similar_video" ? "active" : ""}`}
-            onClick={() => {
-              setMode("similar_video");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <Video size={15} />
-            <span>Video</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "big_files" ? "active" : ""}`}
-            onClick={() => {
-              setMode("big_files");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <ArrowDownWideNarrow size={15} />
-            <span>Big Files</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "temp_files" ? "active" : ""}`}
-            onClick={() => {
-              setMode("temp_files");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <Eraser size={15} />
-            <span>Temp Files</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "broken_files" ? "active" : ""}`}
-            onClick={() => {
-              setMode("broken_files");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <AlertTriangle size={15} />
-            <span>Broken Files</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "empty_files" ? "active" : ""}`}
-            onClick={() => {
-              setMode("empty_files");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <Trash2 size={15} />
-            <span>Empty Files</span>
-          </button>
-          <button
-            className={`tab-btn ${mode === "empty_folders" ? "active" : ""}`}
-            onClick={() => {
-              setMode("empty_folders");
-              setSelectedPaths(new Set());
-            }}
-          >
-            <FolderMinus size={15} />
-            <span>Empty Folders</span>
-          </button>
-        </div>
-      </header>
+        <nav className="nav-groups">
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <div className="nav-group-label">{group.label}</div>
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.mode}
+                    className={`nav-item ${
+                      mode === item.mode ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      setMode(item.mode);
+                      setSelectedPaths(new Set());
+                    }}
+                  >
+                    <Icon size={16} />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">v0.1.0 · Tauri + React</div>
+      </aside>
+
+      {/* Main area */}
+      <div className="main-area">
+        <header className="topbar">
+          <div className="topbar-title">
+            <h1>{MODE_INFO[mode].title}</h1>
+            <p>{MODE_INFO[mode].subtitle}</p>
+          </div>
+
+          <div className="cache-group">
+            <label
+              className="cache-toggle"
+              title="Enable persistent scan cache to accelerate subsequent scans"
+            >
+              <input
+                type="checkbox"
+                checked={useCache}
+                onChange={(e) => setUseCache(e.target.checked)}
+                disabled={scanning || cleaning}
+              />
+              <Zap size={14} className={useCache ? "zap-active" : ""} />
+              <span>Cache</span>
+            </label>
+            <button
+              className="clear-cache-btn"
+              title="Clear all saved scan cache"
+              onClick={handleClearCache}
+              disabled={scanning || cleaning}
+            >
+              Clear
+            </button>
+          </div>
+        </header>
 
       {/* Control Bar */}
       <section className="control-bar">
@@ -738,30 +779,6 @@ export default function App() {
           </div>
         )}
 
-        <div className="cache-group">
-          <label
-            className="cache-toggle"
-            title="Enable persistent scan cache to accelerate subsequent scans"
-          >
-            <input
-              type="checkbox"
-              checked={useCache}
-              onChange={(e) => setUseCache(e.target.checked)}
-              disabled={scanning || cleaning}
-            />
-            <Zap size={14} className={useCache ? "zap-active" : ""} />
-            <span>Cache</span>
-          </label>
-          <button
-            className="clear-cache-btn"
-            title="Clear all saved scan cache"
-            onClick={handleClearCache}
-            disabled={scanning || cleaning}
-          >
-            Clear
-          </button>
-        </div>
-
         <button
           className="scan-btn"
           onClick={handleScan}
@@ -780,6 +797,13 @@ export default function App() {
           )}
         </button>
       </section>
+
+      {/* Indeterminate progress while a scan is running */}
+      {scanning && (
+        <div className="progress-track">
+          <div className="progress-bar" />
+        </div>
+      )}
 
       {/* Sub-bar: Selection Helpers when results exist */}
       {((mode === "duplicates" && duplicates.length > 0) ||
@@ -827,7 +851,11 @@ export default function App() {
       {statusMsg && <div className="status-banner">{statusMsg}</div>}
 
       {/* Main Content Area */}
-      <main className="results-container">
+      <main
+        className={`results-container ${
+          selectedPaths.size > 0 ? "with-footer" : ""
+        }`}
+      >
         {mode === "duplicates" && (
           <div className="list-view">
             {duplicates.length === 0 ? (
@@ -1372,6 +1400,7 @@ export default function App() {
           </div>
         </footer>
       )}
+      </div>
     </div>
   );
 }
