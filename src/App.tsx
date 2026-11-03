@@ -4,6 +4,8 @@ import {
   FolderSearch,
   Files,
   Images,
+  Music,
+  Video,
   FolderMinus,
   Trash2,
   Play,
@@ -43,13 +45,47 @@ interface SimilarImageGroup {
   images: ScannedImage[];
 }
 
+interface ScannedAudio {
+  path: string;
+  size: number;
+  duration_secs: number;
+  sample_rate: number;
+  channels: number;
+  fingerprint: [number, number];
+}
+
+interface SimilarAudioGroup {
+  similarity_info: string;
+  tracks: ScannedAudio[];
+}
+
+interface ScannedVideo {
+  path: string;
+  size: number;
+  duration_secs: number | null;
+  width: number | null;
+  height: number | null;
+  frame_hashes: number[];
+}
+
+interface SimilarVideoGroup {
+  similarity_info: string;
+  videos: ScannedVideo[];
+}
+
 interface CleanReport {
   successful: string[];
   failed: [string, string][];
   bytes_freed: number;
 }
 
-type Mode = "duplicates" | "similar_images" | "empty_files" | "empty_folders";
+type Mode =
+  | "duplicates"
+  | "similar_images"
+  | "similar_audio"
+  | "similar_video"
+  | "empty_files"
+  | "empty_folders";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -66,6 +102,7 @@ export default function App() {
   const [algo, setAlgo] = useState("blake3");
   const [imageAlgo, setImageAlgo] = useState("gradient");
   const [hammingDistance, setHammingDistance] = useState<number>(4);
+  const [durationDiff, setDurationDiff] = useState<number>(2.0);
   const [useCache, setUseCache] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -73,6 +110,8 @@ export default function App() {
 
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [similarImages, setSimilarImages] = useState<SimilarImageGroup[]>([]);
+  const [similarAudio, setSimilarAudio] = useState<SimilarAudioGroup[]>([]);
+  const [similarVideos, setSimilarVideos] = useState<SimilarVideoGroup[]>([]);
   const [emptyFiles, setEmptyFiles] = useState<ScannedFile[]>([]);
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
 
@@ -121,6 +160,28 @@ export default function App() {
         const totalImages = res.reduce((acc, g) => acc + g.images.length, 0);
         setStatusMsg(
           `Scan completed: Found ${res.length} similar image groups (${totalImages} total images)`
+        );
+      } else if (mode === "similar_audio") {
+        const res = await invoke<SimilarAudioGroup[]>("scan_similar_audio", {
+          directories: [scanPath.trim()],
+          exclude: [],
+          maxDurationDiff: durationDiff,
+        });
+        setSimilarAudio(res);
+        const totalTracks = res.reduce((acc, g) => acc + g.tracks.length, 0);
+        setStatusMsg(
+          `Scan completed: Found ${res.length} similar audio groups (${totalTracks} total tracks)`
+        );
+      } else if (mode === "similar_video") {
+        const res = await invoke<SimilarVideoGroup[]>("scan_similar_videos", {
+          directories: [scanPath.trim()],
+          exclude: [],
+          maxDurationDiff: durationDiff,
+        });
+        setSimilarVideos(res);
+        const totalVideos = res.reduce((acc, g) => acc + g.videos.length, 0);
+        setStatusMsg(
+          `Scan completed: Found ${res.length} similar video groups (${totalVideos} total videos)`
         );
       } else if (mode === "empty_files") {
         const res = await invoke<ScannedFile[]>("scan_empty_files", {
@@ -173,6 +234,18 @@ export default function App() {
           next.add(group.images[i].path);
         }
       }
+    } else if (mode === "similar_audio") {
+      for (const group of similarAudio) {
+        for (let i = 1; i < group.tracks.length; i++) {
+          next.add(group.tracks[i].path);
+        }
+      }
+    } else if (mode === "similar_video") {
+      for (const group of similarVideos) {
+        for (let i = 1; i < group.videos.length; i++) {
+          next.add(group.videos[i].path);
+        }
+      }
     } else if (mode === "empty_files") {
       for (const file of emptyFiles) {
         next.add(file.path);
@@ -208,9 +281,25 @@ export default function App() {
           }
         }
       }
+    } else if (mode === "similar_audio") {
+      for (const group of similarAudio) {
+        for (const track of group.tracks) {
+          if (selectedPaths.has(track.path)) {
+            bytes += track.size;
+          }
+        }
+      }
+    } else if (mode === "similar_video") {
+      for (const group of similarVideos) {
+        for (const vid of group.videos) {
+          if (selectedPaths.has(vid.path)) {
+            bytes += vid.size;
+          }
+        }
+      }
     }
     return bytes;
-  }, [selectedPaths, duplicates, similarImages, mode]);
+  }, [selectedPaths, duplicates, similarImages, similarAudio, similarVideos, mode]);
 
   // Trash action
   const handleMoveToTrash = async () => {
@@ -243,6 +332,24 @@ export default function App() {
               images: g.images.filter((img) => !succSet.has(img.path)),
             }))
             .filter((g) => g.images.length >= 2)
+        );
+      } else if (mode === "similar_audio") {
+        setSimilarAudio((prev) =>
+          prev
+            .map((g) => ({
+              ...g,
+              tracks: g.tracks.filter((t) => !succSet.has(t.path)),
+            }))
+            .filter((g) => g.tracks.length >= 2)
+        );
+      } else if (mode === "similar_video") {
+        setSimilarVideos((prev) =>
+          prev
+            .map((g) => ({
+              ...g,
+              videos: g.videos.filter((v) => !succSet.has(v.path)),
+            }))
+            .filter((g) => g.videos.length >= 2)
         );
       } else if (mode === "empty_files") {
         setEmptyFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
@@ -303,8 +410,8 @@ export default function App() {
               setSelectedPaths(new Set());
             }}
           >
-            <Files size={16} />
-            <span>Exact Duplicates</span>
+            <Files size={15} />
+            <span>Duplicates</span>
           </button>
           <button
             className={`tab-btn ${mode === "similar_images" ? "active" : ""}`}
@@ -313,8 +420,28 @@ export default function App() {
               setSelectedPaths(new Set());
             }}
           >
-            <Images size={16} />
-            <span>Similar Images</span>
+            <Images size={15} />
+            <span>Images</span>
+          </button>
+          <button
+            className={`tab-btn ${mode === "similar_audio" ? "active" : ""}`}
+            onClick={() => {
+              setMode("similar_audio");
+              setSelectedPaths(new Set());
+            }}
+          >
+            <Music size={15} />
+            <span>Audio</span>
+          </button>
+          <button
+            className={`tab-btn ${mode === "similar_video" ? "active" : ""}`}
+            onClick={() => {
+              setMode("similar_video");
+              setSelectedPaths(new Set());
+            }}
+          >
+            <Video size={15} />
+            <span>Video</span>
           </button>
           <button
             className={`tab-btn ${mode === "empty_files" ? "active" : ""}`}
@@ -323,7 +450,7 @@ export default function App() {
               setSelectedPaths(new Set());
             }}
           >
-            <Trash2 size={16} />
+            <Trash2 size={15} />
             <span>Empty Files</span>
           </button>
           <button
@@ -333,7 +460,7 @@ export default function App() {
               setSelectedPaths(new Set());
             }}
           >
-            <FolderMinus size={16} />
+            <FolderMinus size={15} />
             <span>Empty Folders</span>
           </button>
         </div>
@@ -409,6 +536,29 @@ export default function App() {
           </>
         )}
 
+        {(mode === "similar_audio" || mode === "similar_video") && (
+          <div className="input-group">
+            <label>Max Duration Diff (s):</label>
+            <input
+              type="number"
+              step="0.5"
+              value={durationDiff}
+              onChange={(e) => setDurationDiff(Number(e.target.value))}
+              style={{ width: "80px" }}
+              disabled={scanning || cleaning}
+            />
+          </div>
+        )}
+
+        {mode === "similar_video" && (
+          <span
+            className="ffmpeg-hint"
+            title="Video frame analysis uses ffmpeg/ffprobe from PATH; without them videos are grouped by size and duration only"
+          >
+            ffmpeg for frames
+          </span>
+        )}
+
         <div className="cache-group">
           <label
             className="cache-toggle"
@@ -455,6 +605,8 @@ export default function App() {
       {/* Sub-bar: Selection Helpers when results exist */}
       {((mode === "duplicates" && duplicates.length > 0) ||
         (mode === "similar_images" && similarImages.length > 0) ||
+        (mode === "similar_audio" && similarAudio.length > 0) ||
+        (mode === "similar_video" && similarVideos.length > 0) ||
         (mode === "empty_files" && emptyFiles.length > 0) ||
         (mode === "empty_folders" && emptyFolders.length > 0)) && (
         <div className="selection-toolbar">
@@ -616,6 +768,153 @@ export default function App() {
                               title="Copy path"
                               onClick={() =>
                                 navigator.clipboard.writeText(img.path)
+                              }
+                            >
+                              <Copy size={14} />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {mode === "similar_audio" && (
+          <div className="list-view">
+            {similarAudio.length === 0 ? (
+              <div className="empty-state">
+                <Music size={48} opacity={0.3} />
+                <p>No similar audio tracks found or scan not started.</p>
+              </div>
+            ) : (
+              similarAudio.map((group, gIdx) => (
+                <div key={gIdx} className="result-card">
+                  <div className="card-header">
+                    <span className="badge teal-badge">
+                      Audio Group #{gIdx + 1}
+                    </span>
+                    <span className="meta">
+                      {group.tracks.length} tracks
+                    </span>
+                    <span className="tolerance-tag">
+                      {group.similarity_info}
+                    </span>
+                  </div>
+                  <ul className="file-list">
+                    {group.tracks.map((track, tIdx) => {
+                      const isSelected = selectedPaths.has(track.path);
+                      const isFirst = tIdx === 0;
+                      return (
+                        <li
+                          key={tIdx}
+                          className={`file-item ${
+                            isSelected ? "selected-item" : ""
+                          }`}
+                        >
+                          <label className="checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelect(track.path)}
+                            />
+                            {isFirst && (
+                              <span className="keeper-badge">Original</span>
+                            )}
+                            <span className="file-path">{track.path}</span>
+                          </label>
+                          <div className="image-meta">
+                            <span className="res-badge">
+                              {track.duration_secs.toFixed(1)}s
+                            </span>
+                            <span className="res-badge">
+                              {track.sample_rate}Hz ({track.channels}ch)
+                            </span>
+                            <span className="size-badge">
+                              {formatBytes(track.size)}
+                            </span>
+                            <button
+                              className="icon-action-btn"
+                              title="Copy path"
+                              onClick={() =>
+                                navigator.clipboard.writeText(track.path)
+                              }
+                            >
+                              <Copy size={14} />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {mode === "similar_video" && (
+          <div className="list-view">
+            {similarVideos.length === 0 ? (
+              <div className="empty-state">
+                <Video size={48} opacity={0.3} />
+                <p>No similar videos found or scan not started.</p>
+              </div>
+            ) : (
+              similarVideos.map((group, gIdx) => (
+                <div key={gIdx} className="result-card">
+                  <div className="card-header">
+                    <span className="badge amber-badge">
+                      Video Group #{gIdx + 1}
+                    </span>
+                    <span className="meta">
+                      {group.videos.length} videos
+                    </span>
+                    <span className="tolerance-tag">
+                      {group.similarity_info}
+                    </span>
+                  </div>
+                  <ul className="file-list">
+                    {group.videos.map((vid, vIdx) => {
+                      const isSelected = selectedPaths.has(vid.path);
+                      const isFirst = vIdx === 0;
+                      return (
+                        <li
+                          key={vIdx}
+                          className={`file-item ${
+                            isSelected ? "selected-item" : ""
+                          }`}
+                        >
+                          <label className="checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelect(vid.path)}
+                            />
+                            {isFirst && (
+                              <span className="best-tag">
+                                <Sparkles size={12} /> Best
+                              </span>
+                            )}
+                            <span className="file-path">{vid.path}</span>
+                          </label>
+                          <div className="image-meta">
+                            {vid.width && vid.height && (
+                              <span className="res-badge">
+                                {vid.width} × {vid.height}
+                              </span>
+                            )}
+                            <span className="size-badge">
+                              {formatBytes(vid.size)}
+                            </span>
+                            <button
+                              className="icon-action-btn"
+                              title="Copy path"
+                              onClick={() =>
+                                navigator.clipboard.writeText(vid.path)
                               }
                             >
                               <Copy size={14} />

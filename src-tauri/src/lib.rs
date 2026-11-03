@@ -3,8 +3,9 @@ use dedupus_core::{
     replace_with_hardlinks as core_replace_with_hardlinks, CancellationToken, CleanReport,
     DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder,
     EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
-    ImageHashAlgorithm, ScanCache, ScannedFile, SimilarImageConfig, SimilarImageFinder,
-    SimilarImageGroup,
+    ImageHashAlgorithm, ScanCache, ScannedFile, SimilarAudioConfig, SimilarAudioFinder,
+    SimilarAudioGroup, SimilarImageConfig, SimilarImageFinder, SimilarImageGroup,
+    SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup,
 };
 use std::path::PathBuf;
 
@@ -64,6 +65,44 @@ fn scan_similar_images(
     let token = CancellationToken::new();
     let finder = SimilarImageFinder::new(config, token);
     finder.find_similar_images(|_| {}).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn scan_similar_audio(
+    directories: Vec<String>,
+    exclude: Vec<String>,
+    max_duration_diff: Option<f64>,
+) -> Result<Vec<SimilarAudioGroup>, String> {
+    let config = SimilarAudioConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        max_duration_diff_secs: max_duration_diff.unwrap_or(2.0),
+        max_distance: 16,
+        min_file_size: 10 * 1024,
+    };
+
+    let token = CancellationToken::new();
+    let finder = SimilarAudioFinder::new(config, token);
+    finder.find_similar_audio(|_| {}).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn scan_similar_videos(
+    directories: Vec<String>,
+    exclude: Vec<String>,
+    max_duration_diff: Option<f64>,
+) -> Result<Vec<SimilarVideoGroup>, String> {
+    let config = SimilarVideoConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        max_duration_diff_secs: max_duration_diff.unwrap_or(2.0),
+        max_frame_distance: 10,
+        min_file_size: 100 * 1024,
+    };
+
+    let token = CancellationToken::new();
+    let finder = SimilarVideoFinder::new(config, token);
+    finder.find_similar_videos(|_| {}).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -138,6 +177,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_duplicates,
             scan_similar_images,
+            scan_similar_audio,
+            scan_similar_videos,
             scan_empty_files,
             scan_empty_folders,
             delete_to_trash,

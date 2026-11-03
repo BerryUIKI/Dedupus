@@ -25,17 +25,17 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
 
 ## 🚀 Key Features Planned
 
-- [ ] **Exact Duplicates**: Multi-stage detection (Size ➔ 4KB prefix hash ➔ Full BLAKE3/XXH3 hash).
-- [ ] **Similar Images**: Perceptual hashing (dHash, aHash, pHash, Blockhash) with configurable similarity thresholds.
-- [ ] **Similar Audio & Video**: Audio fingerprinting and keyframe perceptual hashing.
-- [ ] **Disk Hygiene**:
-  - Empty files & empty directory trees.
-  - Temporary & cache files.
-  - Broken symlinks / invalid shortcuts.
-  - Broken media files (corrupted images, unreadable archives).
-  - Big files analyzer.
-- [ ] **Safe Cleaning Actions**: Move to Recycle Bin / Trash, hardlinking, symlinking, or permanent deletion.
-- [ ] **Scan Cache**: Persist file hashes across scans to dramatically speed up subsequent runs.
+- [x] **Exact Duplicates**: Multi-stage detection (Size ➔ 4KB prefix hash ➔ Full BLAKE3/XXH3 hash).
+- [x] **Similar Images**: Perceptual hashing (dHash, aHash) with configurable similarity thresholds.
+- [x] **Similar Audio & Video**: Acoustic energy-envelope fingerprints for audio; keyframe dHash sampling for video (requires `ffmpeg`/`ffprobe` on PATH for video frames).
+- [x] **Disk Hygiene**:
+  - [x] Empty files & empty directory trees.
+  - [ ] Temporary & cache files.
+  - [ ] Broken symlinks / invalid shortcuts.
+  - [ ] Broken media files (corrupted images, unreadable archives).
+  - [ ] Big files analyzer.
+- [x] **Safe Cleaning Actions**: Move to Recycle Bin / Trash, hardlinking, or permanent deletion.
+- [x] **Scan Cache**: Persist file hashes across scans to dramatically speed up subsequent runs.
 
 ---
 

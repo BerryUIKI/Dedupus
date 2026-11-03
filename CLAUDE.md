@@ -56,6 +56,10 @@ cargo run -p dedupus_cli -- dup <directory_path> [--algo blake3|xxh3_64|xxh3_128
 # Similar image search (perceptual hashing)
 cargo run -p dedupus_cli -- image <directory_path> [--distance 4] [--algo gradient|average]
 
+# Similar audio / video search (acoustic envelope + keyframe dHash; video frames require ffmpeg on PATH)
+cargo run -p dedupus_cli -- audio <directory_path> [--duration-diff 2.0]
+cargo run -p dedupus_cli -- video <directory_path> [--duration-diff 2.0]
+
 # Empty files & folders
 cargo run -p dedupus_cli -- empty-files <directory_path>
 cargo run -p dedupus_cli -- empty-folders <directory_path>

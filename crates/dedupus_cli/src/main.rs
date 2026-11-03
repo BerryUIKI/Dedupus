@@ -96,6 +96,36 @@ enum Commands {
         no_cache: bool,
     },
 
+    /// Search for similar audio tracks using acoustic envelope fingerprinting
+    Audio {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Maximum duration difference in seconds (default: 2.0)
+        #[arg(short, long, default_value_t = 2.0)]
+        duration_diff: f64,
+    },
+
+    /// Search for similar videos using keyframe perceptual hashing
+    Video {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Maximum duration difference in seconds (default: 2.0)
+        #[arg(short, long, default_value_t = 2.0)]
+        duration_diff: f64,
+    },
+
     /// Search for empty files
     EmptyFiles {
         /// Directories to scan
@@ -242,6 +272,104 @@ fn main() -> Result<()> {
                         img.height,
                         img.size,
                         img.hash
+                    );
+                }
+                println!();
+            }
+        }
+
+        Commands::Audio {
+            directories,
+            exclude,
+            duration_diff,
+        } => {
+            println!("🎵 Scanning for similar audio tracks in: {:?}", directories);
+            let config = dedupus_core::SimilarAudioConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                max_duration_diff_secs: duration_diff,
+                max_distance: 16,
+                min_file_size: 10 * 1024,
+            };
+
+            let finder = dedupus_core::SimilarAudioFinder::new(config, token);
+            let groups = finder.find_similar_audio(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("🎵 Discovered {} audio files...", count);
+                }
+                ProgressEvent::HashingStarted { total_files } => {
+                    println!("⚡ Computing acoustic fingerprints for {} audio files...", total_files);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            println!("\n🎉 Found {} groups of similar audio tracks:\n", groups.len());
+            for (idx, group) in groups.iter().enumerate() {
+                println!("Group #{} [{}]:", idx + 1, group.similarity_info);
+                for track in &group.tracks {
+                    println!(
+                        "  - {} [{:.1}s, {}Hz, {}ch, {} bytes]",
+                        track.path.display(),
+                        track.duration_secs,
+                        track.sample_rate,
+                        track.channels,
+                        track.size
+                    );
+                }
+                println!();
+            }
+        }
+
+        Commands::Video {
+            directories,
+            exclude,
+            duration_diff,
+        } => {
+            println!("🎬 Scanning for similar videos in: {:?}", directories);
+            let config = dedupus_core::SimilarVideoConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                max_duration_diff_secs: duration_diff,
+                max_frame_distance: 10,
+                min_file_size: 100 * 1024,
+            };
+
+            let finder = dedupus_core::SimilarVideoFinder::new(config, token);
+            let groups = finder.find_similar_videos(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("🎬 Discovered {} video files...", count);
+                }
+                ProgressEvent::HashingStarted { total_files } => {
+                    println!("⚡ Extracting keyframe hashes for {} videos...", total_files);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            println!("\n🎉 Found {} groups of similar videos:\n", groups.len());
+            for (idx, group) in groups.iter().enumerate() {
+                println!("Group #{} [{}]:", idx + 1, group.similarity_info);
+                for vid in &group.videos {
+                    let res_str = match (vid.width, vid.height) {
+                        (Some(w), Some(h)) => format!("{}x{}", w, h),
+                        _ => "Unknown res".to_string(),
+                    };
+                    println!(
+                        "  - {} [{}, {} bytes]",
+                        vid.path.display(),
+                        res_str,
+                        vid.size
                     );
                 }
                 println!();

@@ -179,6 +179,17 @@ body {
   color: #f87171;
 }
 
+.ffmpeg-hint {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  background-color: #1e293b;
+  border: 1px dashed #475569;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .scan-btn {
   display: flex;
   align-items: center;
@@ -267,6 +278,14 @@ body {
 
 .purple-badge {
   background-color: #8b5cf6;
+}
+
+.teal-badge {
+  background-color: #0d9488;
+}
+
+.amber-badge {
+  background-color: #d97706;
 }
 
 .tolerance-tag {
