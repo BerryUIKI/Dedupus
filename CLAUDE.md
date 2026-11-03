@@ -67,6 +67,9 @@ cargo run -p dedupus_cli -- empty-folders <directory_path>
 # Largest files (default: >= 100 MiB, top 100)
 cargo run -p dedupus_cli -- big-files <directory_path> [--min-size 104857600] [--limit 100]
 
+# Temporary/backup/junk files (default extensions .tmp, .bak, .part, ~ copies, Thumbs.db, ...)
+cargo run -p dedupus_cli -- temp-files <directory_path> [--min-size 0] [--extra-extension .myext]
+
 # Move files to system Recycle Bin / Trash
 cargo run -p dedupus_cli -- trash <file_paths...>
 

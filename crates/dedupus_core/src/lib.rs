@@ -8,6 +8,7 @@ pub mod empty_folder;
 pub mod similar_audio;
 pub mod similar_image;
 pub mod similar_video;
+pub mod temp_file;
 
 pub use big_file::{BigFileFinder, BigFileFinderConfig};
 pub use cache::ScanCache;
@@ -25,6 +26,7 @@ pub use similar_image::{
 pub use similar_video::{
     ScannedVideo, SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup,
 };
+pub use temp_file::{TempFile, TempFileFinder, TempFileFinderConfig};
 
 #[cfg(test)]
 mod tests {
@@ -270,6 +272,37 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].path, large);
         assert_eq!(files[1].path, medium);
+    }
+
+    #[test]
+    fn test_temp_file_finder() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        std::fs::write(path.join("report.txt~"), b"backup").unwrap();
+        std::fs::write(path.join("~$slides.pptx"), b"lock").unwrap();
+        std::fs::write(path.join("download.part"), b"partial").unwrap();
+        std::fs::write(path.join("Thumbs.db"), b"junk").unwrap();
+        std::fs::write(path.join("keep.txt"), b"keep me").unwrap();
+
+        let config = TempFileFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            excluded_directories: vec![],
+            min_file_size: 0,
+            extra_extensions: vec![],
+        };
+        let token = CancellationToken::new();
+        let finder = TempFileFinder::new(config, token);
+        let found = finder.find_temp_files(|_| {}).unwrap();
+
+        assert_eq!(found.len(), 4);
+        assert!(found.iter().all(|f| !f.path.ends_with("keep.txt")));
+        assert!(found
+            .iter()
+            .any(|f| f.reason == "Office lock file"));
+        assert!(found.iter().any(|f| f.reason == "Backup copy"));
+        assert!(found.iter().any(|f| f.reason == "Extension .part"));
+        assert!(found.iter().any(|f| f.reason == "OS junk file"));
     }
 
     #[test]

@@ -167,6 +167,25 @@ enum Commands {
         limit: usize,
     },
 
+    /// Find temporary, backup and junk files
+    TempFiles {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Minimum file size in bytes
+        #[arg(short, long, default_value_t = 0)]
+        min_size: u64,
+
+        /// Additional extensions to treat as temporary (e.g. .myext)
+        #[arg(short = 'x', long)]
+        extra_extension: Vec<String>,
+    },
+
     /// Move specified files to the system Recycle Bin / Trash
     Trash {
         /// Files to move to Trash
@@ -469,6 +488,52 @@ fn main() -> Result<()> {
                     "  {:>3}. {:>10.2} MiB  {}",
                     idx + 1,
                     f.size as f64 / (1024.0 * 1024.0),
+                    f.path.display()
+                );
+            }
+        }
+
+        Commands::TempFiles {
+            directories,
+            exclude,
+            min_size,
+            extra_extension,
+        } => {
+            println!("🧹 Scanning for temporary files in: {:?}", directories);
+            let config = dedupus_core::TempFileFinderConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                min_file_size: min_size,
+                extra_extensions: extra_extension
+                    .into_iter()
+                    .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
+                    .collect(),
+            };
+            let finder = dedupus_core::TempFileFinder::new(config, token);
+            let found = finder.find_temp_files(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("📄 Scanned {} files...", count);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            let total: u64 = found.iter().map(|f| f.size).sum();
+            println!(
+                "\nFound {} temporary files (Total: {:.2} MiB):",
+                found.len(),
+                total as f64 / (1024.0 * 1024.0)
+            );
+            for f in &found {
+                println!(
+                    "  {:>10.2} KiB  [{}]  {}",
+                    f.size as f64 / 1024.0,
+                    f.reason,
                     f.path.display()
                 );
             }

@@ -5,7 +5,8 @@ use dedupus_core::{
     EmptyFileFinder, EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig,
     HashAlgorithm, ImageHashAlgorithm, ScanCache, ScannedFile, SimilarAudioConfig,
     SimilarAudioFinder, SimilarAudioGroup, SimilarImageConfig, SimilarImageFinder,
-    SimilarImageGroup, SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup,
+    SimilarImageGroup, SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup, TempFile,
+    TempFileFinder, TempFileFinderConfig,
 };
 use std::path::PathBuf;
 
@@ -155,6 +156,24 @@ fn scan_big_files(
 }
 
 #[tauri::command]
+fn scan_temp_files(
+    directories: Vec<String>,
+    exclude: Vec<String>,
+    min_size: Option<u64>,
+) -> Result<Vec<TempFile>, String> {
+    let config = TempFileFinderConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        min_file_size: min_size.unwrap_or(0),
+        extra_extensions: Vec::new(),
+    };
+
+    let token = CancellationToken::new();
+    let finder = TempFileFinder::new(config, token);
+    finder.find_temp_files(|_| {}).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_to_trash(paths: Vec<String>) -> Result<CleanReport, String> {
     let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     Ok(core_move_to_trash(&path_bufs))
@@ -201,6 +220,7 @@ pub fn run() {
             scan_empty_files,
             scan_empty_folders,
             scan_big_files,
+            scan_temp_files,
             delete_to_trash,
             delete_permanently,
             replace_with_hardlinks,

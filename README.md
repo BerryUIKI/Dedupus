@@ -30,7 +30,7 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
 - [x] **Similar Audio & Video**: Acoustic energy-envelope fingerprints for audio; keyframe dHash sampling for video (requires `ffmpeg`/`ffprobe` on PATH for video frames).
 - [x] **Disk Hygiene**:
   - [x] Empty files & empty directory trees.
-  - [ ] Temporary & cache files.
+  - [x] Temporary & cache files.
   - [ ] Broken symlinks / invalid shortcuts.
   - [ ] Broken media files (corrupted images, unreadable archives).
   - [x] Big files analyzer.

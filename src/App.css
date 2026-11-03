@@ -204,6 +204,17 @@ body {
   font-family: Consolas, monospace;
 }
 
+.temp-reason-badge {
+  flex-shrink: 0;
+  background-color: #3f2d1a;
+  color: #fbbf24;
+  border: 1px solid #78511f;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .scan-btn {
   display: flex;
   align-items: center;
