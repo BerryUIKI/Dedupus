@@ -48,6 +48,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
+### CLI Commands
+```bash
+# Duplicate search
+cargo run -p dedupus_cli -- dup <directory_path> [--algo blake3|xxh3_64|xxh3_128] [--min-size 1024]
+
+# Similar image search (perceptual hashing)
+cargo run -p dedupus_cli -- image <directory_path> [--distance 4] [--algo gradient|average]
+
+# Empty files & folders
+cargo run -p dedupus_cli -- empty-files <directory_path>
+cargo run -p dedupus_cli -- empty-folders <directory_path>
+```
+
 ### Frontend & Tauri
 ```bash
 # Install frontend dependencies

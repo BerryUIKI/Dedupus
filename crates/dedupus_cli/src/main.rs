@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use dedupus_core::{
     CancellationToken, DuplicateFinder, DuplicateFinderConfig, EmptyFileFinder,
-    EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm, ProgressEvent,
+    EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
+    ImageHashAlgorithm, ProgressEvent, SimilarImageConfig, SimilarImageFinder,
 };
 use std::path::PathBuf;
 
@@ -56,6 +57,25 @@ enum Commands {
         /// Hashing algorithm
         #[arg(short, long, value_enum, default_value_t = CliHashAlgo::Blake3)]
         algo: CliHashAlgo,
+    },
+
+    /// Search for similar images using perceptual hashing
+    Image {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Maximum Hamming distance (0 = identical, 1-3 = very high, 4-8 = high, default: 4)
+        #[arg(short, long, default_value_t = 4)]
+        distance: u8,
+
+        /// Perceptual algorithm: gradient (dHash) or average (aHash)
+        #[arg(short, long, default_value = "gradient")]
+        algo: String,
     },
 
     /// Search for empty files
@@ -132,6 +152,62 @@ fn main() -> Result<()> {
                 );
                 for file in &group.files {
                     println!("  - {}", file.path.display());
+                }
+                println!();
+            }
+        }
+
+        Commands::Image {
+            directories,
+            exclude,
+            distance,
+            algo,
+        } => {
+            println!("🖼️ Scanning for similar images in: {:?}", directories);
+
+            let hash_algorithm = if algo.to_lowercase() == "average" {
+                ImageHashAlgorithm::Average
+            } else {
+                ImageHashAlgorithm::Gradient
+            };
+
+            let config = SimilarImageConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                max_hamming_distance: distance,
+                hash_algorithm,
+                min_file_size: 1024,
+            };
+
+            let finder = SimilarImageFinder::new(config, token);
+            let groups = finder.find_similar_images(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("🖼️ Discovered {} image files...", count);
+                }
+                ProgressEvent::HashingStarted { total_files } => {
+                    println!("⚡ Computing perceptual hashes for {} images...", total_files);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            println!("\n🎉 Found {} groups of similar images:\n", groups.len());
+            for (idx, group) in groups.iter().enumerate() {
+                println!("Group #{} [{}]:", idx + 1, group.similarity_level);
+                for img in &group.images {
+                    println!(
+                        "  - {} [{}x{}, {} bytes, Hash: {:016x}]",
+                        img.path.display(),
+                        img.width,
+                        img.height,
+                        img.size,
+                        img.hash
+                    );
                 }
                 println!();
             }

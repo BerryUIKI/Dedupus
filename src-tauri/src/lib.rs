@@ -1,6 +1,7 @@
 use dedupus_core::{
     CancellationToken, DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder,
-    EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm, ScannedFile,
+    EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
+    ImageHashAlgorithm, ScannedFile, SimilarImageConfig, SimilarImageFinder, SimilarImageGroup,
 };
 use std::path::PathBuf;
 
@@ -30,6 +31,32 @@ fn scan_duplicates(
     let finder = DuplicateFinder::new(config, token);
 
     finder.find_duplicates(|_| {}).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn scan_similar_images(
+    directories: Vec<String>,
+    exclude: Vec<String>,
+    distance: Option<u8>,
+    algo: Option<String>,
+) -> Result<Vec<SimilarImageGroup>, String> {
+    let hash_algorithm = if algo.as_deref() == Some("average") {
+        ImageHashAlgorithm::Average
+    } else {
+        ImageHashAlgorithm::Gradient
+    };
+
+    let config = SimilarImageConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        max_hamming_distance: distance.unwrap_or(4),
+        hash_algorithm,
+        min_file_size: 1024,
+    };
+
+    let token = CancellationToken::new();
+    let finder = SimilarImageFinder::new(config, token);
+    finder.find_similar_images(|_| {}).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -68,6 +95,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             scan_duplicates,
+            scan_similar_images,
             scan_empty_files,
             scan_empty_folders
         ])

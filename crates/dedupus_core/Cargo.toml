@@ -19,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

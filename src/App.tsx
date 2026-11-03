@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   FolderSearch,
   Files,
+  Images,
   FolderMinus,
   Trash2,
   Play,
@@ -10,6 +11,7 @@ import {
   HardDrive,
   Copy,
   FolderOpen,
+  Sparkles,
 } from "lucide-react";
 import "./App.css";
 
@@ -25,7 +27,22 @@ interface DuplicateGroup {
   files: ScannedFile[];
 }
 
-type Mode = "duplicates" | "empty_files" | "empty_folders";
+interface ScannedImage {
+  path: string;
+  size: number;
+  width: u32;
+  height: u32;
+  hash: number;
+}
+
+type u32 = number;
+
+interface SimilarImageGroup {
+  similarity_level: string;
+  images: ScannedImage[];
+}
+
+type Mode = "duplicates" | "similar_images" | "empty_files" | "empty_folders";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -40,10 +57,13 @@ export default function App() {
   const [scanPath, setScanPath] = useState("");
   const [minSize, setMinSize] = useState<number>(1024); // 1KB default
   const [algo, setAlgo] = useState("blake3");
+  const [imageAlgo, setImageAlgo] = useState("gradient");
+  const [hammingDistance, setHammingDistance] = useState<number>(4);
   const [scanning, setScanning] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
 
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
+  const [similarImages, setSimilarImages] = useState<SimilarImageGroup[]>([]);
   const [emptyFiles, setEmptyFiles] = useState<ScannedFile[]>([]);
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
 
@@ -74,6 +94,18 @@ export default function App() {
           `Scan completed: Found ${res.length} duplicate groups (${formatBytes(
             totalWasted
           )} reclaimable)`
+        );
+      } else if (mode === "similar_images") {
+        const res = await invoke<SimilarImageGroup[]>("scan_similar_images", {
+          directories: [scanPath.trim()],
+          exclude: [],
+          distance: hammingDistance,
+          algo: imageAlgo,
+        });
+        setSimilarImages(res);
+        const totalImages = res.reduce((acc, g) => acc + g.images.length, 0);
+        setStatusMsg(
+          `Scan completed: Found ${res.length} similar image groups (${totalImages} total images)`
         );
       } else if (mode === "empty_files") {
         const res = await invoke<ScannedFile[]>("scan_empty_files", {
@@ -119,7 +151,14 @@ export default function App() {
             onClick={() => setMode("duplicates")}
           >
             <Files size={16} />
-            <span>Duplicate Files</span>
+            <span>Exact Duplicates</span>
+          </button>
+          <button
+            className={`tab-btn ${mode === "similar_images" ? "active" : ""}`}
+            onClick={() => setMode("similar_images")}
+          >
+            <Images size={16} />
+            <span>Similar Images</span>
           </button>
           <button
             className={`tab-btn ${mode === "empty_files" ? "active" : ""}`}
@@ -178,11 +217,37 @@ export default function App() {
           </>
         )}
 
-        <button
-          className="scan-btn"
-          onClick={handleScan}
-          disabled={scanning}
-        >
+        {mode === "similar_images" && (
+          <>
+            <div className="input-group">
+              <label>Tolerance (Distance):</label>
+              <select
+                value={hammingDistance}
+                onChange={(e) => setHammingDistance(Number(e.target.value))}
+                disabled={scanning}
+              >
+                <option value={0}>0 - Identical</option>
+                <option value={2}>2 - Very High Similarity</option>
+                <option value={4}>4 - High Similarity (Default)</option>
+                <option value={8}>8 - Medium Similarity</option>
+                <option value={12}>12 - Low Similarity</option>
+              </select>
+            </div>
+            <div className="input-group">
+              <label>Hash Method:</label>
+              <select
+                value={imageAlgo}
+                onChange={(e) => setImageAlgo(e.target.value)}
+                disabled={scanning}
+              >
+                <option value="gradient">Gradient (dHash)</option>
+                <option value="average">Average (aHash)</option>
+              </select>
+            </div>
+          </>
+        )}
+
+        <button className="scan-btn" onClick={handleScan} disabled={scanning}>
           {scanning ? (
             <>
               <RotateCw size={16} className="spin" />
@@ -245,6 +310,70 @@ export default function App() {
                   </div>
                 );
               })
+            )}
+          </div>
+        )}
+
+        {mode === "similar_images" && (
+          <div className="list-view">
+            {similarImages.length === 0 ? (
+              <div className="empty-state">
+                <Images size={48} opacity={0.3} />
+                <p>No similar images found or scan not started.</p>
+              </div>
+            ) : (
+              similarImages.map((group, gIdx) => (
+                <div key={gIdx} className="result-card">
+                  <div className="card-header">
+                    <span className="badge purple-badge">
+                      Image Group #{gIdx + 1}
+                    </span>
+                    <span className="meta">
+                      {group.images.length} candidates
+                    </span>
+                    <span className="tolerance-tag">
+                      {group.similarity_level}
+                    </span>
+                  </div>
+                  <ul className="file-list">
+                    {group.images.map((img, iIdx) => {
+                      const isHighestRes = iIdx === 0;
+                      return (
+                        <li key={iIdx} className="file-item">
+                          <div className="image-info">
+                            {isHighestRes && (
+                              <span
+                                className="best-tag"
+                                title="Highest resolution in group"
+                              >
+                                <Sparkles size={12} /> Best Res
+                              </span>
+                            )}
+                            <span className="file-path">{img.path}</span>
+                          </div>
+                          <div className="image-meta">
+                            <span className="res-badge">
+                              {img.width} × {img.height}
+                            </span>
+                            <span className="size-badge">
+                              {formatBytes(img.size)}
+                            </span>
+                            <button
+                              className="icon-action-btn"
+                              title="Copy path"
+                              onClick={() =>
+                                navigator.clipboard.writeText(img.path)
+                              }
+                            >
+                              <Copy size={14} />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))
             )}
           </div>
         )}
