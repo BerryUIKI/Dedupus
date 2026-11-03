@@ -14,6 +14,7 @@ import {
   Sparkles,
   CheckSquare,
   Square,
+  Zap,
 } from "lucide-react";
 import "./App.css";
 
@@ -65,6 +66,7 @@ export default function App() {
   const [algo, setAlgo] = useState("blake3");
   const [imageAlgo, setImageAlgo] = useState("gradient");
   const [hammingDistance, setHammingDistance] = useState<number>(4);
+  const [useCache, setUseCache] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
@@ -95,6 +97,7 @@ export default function App() {
           minSize: minSize > 0 ? minSize : null,
           maxSize: null,
           algo,
+          useCache,
         });
         setDuplicates(res);
         const totalWasted = res.reduce(
@@ -112,6 +115,7 @@ export default function App() {
           exclude: [],
           distance: hammingDistance,
           algo: imageAlgo,
+          useCache,
         });
         setSimilarImages(res);
         const totalImages = res.reduce((acc, g) => acc + g.images.length, 0);
@@ -266,6 +270,16 @@ export default function App() {
     }
   };
 
+  const handleClearCache = async () => {
+    try {
+      await invoke("clear_cache");
+      setStatusMsg("✨ Scan cache cleared.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Clear cache failed: ${msg}`);
+    }
+  };
+
   return (
     <div className="app-container">
       {/* Top Header */}
@@ -394,6 +408,30 @@ export default function App() {
             </div>
           </>
         )}
+
+        <div className="cache-group">
+          <label
+            className="cache-toggle"
+            title="Enable persistent scan cache to accelerate subsequent scans"
+          >
+            <input
+              type="checkbox"
+              checked={useCache}
+              onChange={(e) => setUseCache(e.target.checked)}
+              disabled={scanning || cleaning}
+            />
+            <Zap size={14} className={useCache ? "zap-active" : ""} />
+            <span>Cache</span>
+          </label>
+          <button
+            className="clear-cache-btn"
+            title="Clear all saved scan cache"
+            onClick={handleClearCache}
+            disabled={scanning || cleaning}
+          >
+            Clear
+          </button>
+        </div>
 
         <button
           className="scan-btn"

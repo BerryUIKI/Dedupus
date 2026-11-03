@@ -62,6 +62,11 @@ cargo run -p dedupus_cli -- empty-folders <directory_path>
 
 # Move files to system Recycle Bin / Trash
 cargo run -p dedupus_cli -- trash <file_paths...>
+
+# Cache management
+cargo run -p dedupus_cli -- cache stats
+cargo run -p dedupus_cli -- cache prune
+cargo run -p dedupus_cli -- cache clear
 ```
 
 ### Frontend & Tauri

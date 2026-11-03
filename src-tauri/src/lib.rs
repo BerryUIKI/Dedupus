@@ -3,7 +3,8 @@ use dedupus_core::{
     replace_with_hardlinks as core_replace_with_hardlinks, CancellationToken, CleanReport,
     DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder,
     EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
-    ImageHashAlgorithm, ScannedFile, SimilarImageConfig, SimilarImageFinder, SimilarImageGroup,
+    ImageHashAlgorithm, ScanCache, ScannedFile, SimilarImageConfig, SimilarImageFinder,
+    SimilarImageGroup,
 };
 use std::path::PathBuf;
 
@@ -14,6 +15,7 @@ fn scan_duplicates(
     min_size: Option<u64>,
     max_size: Option<u64>,
     algo: Option<String>,
+    use_cache: Option<bool>,
 ) -> Result<Vec<DuplicateGroup>, String> {
     let hash_algorithm = match algo.as_deref() {
         Some("xxh3_64") => HashAlgorithm::Xxh3_64,
@@ -27,6 +29,7 @@ fn scan_duplicates(
         min_file_size: min_size.unwrap_or(1),
         max_file_size: max_size,
         hash_algorithm,
+        use_cache: use_cache.unwrap_or(true),
     };
 
     let token = CancellationToken::new();
@@ -41,6 +44,7 @@ fn scan_similar_images(
     exclude: Vec<String>,
     distance: Option<u8>,
     algo: Option<String>,
+    use_cache: Option<bool>,
 ) -> Result<Vec<SimilarImageGroup>, String> {
     let hash_algorithm = if algo.as_deref() == Some("average") {
         ImageHashAlgorithm::Average
@@ -54,6 +58,7 @@ fn scan_similar_images(
         max_hamming_distance: distance.unwrap_or(4),
         hash_algorithm,
         min_file_size: 1024,
+        use_cache: use_cache.unwrap_or(true),
     };
 
     let token = CancellationToken::new();
@@ -110,6 +115,22 @@ fn replace_with_hardlinks(target: String, duplicates: Vec<String>) -> Result<Cle
     Ok(core_replace_with_hardlinks(&target_path, &dup_paths))
 }
 
+#[tauri::command]
+fn get_cache_stats() -> Result<(usize, usize), String> {
+    let dup_cache = ScanCache::load_or_create("dup_cache");
+    let img_cache = ScanCache::load_or_create("img_cache");
+    Ok((dup_cache.file_hashes.len(), img_cache.image_hashes.len()))
+}
+
+#[tauri::command]
+fn clear_cache() -> Result<(), String> {
+    let mut dup_cache = ScanCache::load_or_create("dup_cache");
+    let mut img_cache = ScanCache::load_or_create("img_cache");
+    dup_cache.clear().map_err(|e| e.to_string())?;
+    img_cache.clear().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -121,7 +142,9 @@ pub fn run() {
             scan_empty_folders,
             delete_to_trash,
             delete_permanently,
-            replace_with_hardlinks
+            replace_with_hardlinks,
+            get_cache_stats,
+            clear_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

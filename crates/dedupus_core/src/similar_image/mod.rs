@@ -25,6 +25,7 @@ pub struct SimilarImageConfig {
     pub max_hamming_distance: u8, // 0 = identical perceptual, 1-3 = very high, 4-8 = high
     pub hash_algorithm: ImageHashAlgorithm,
     pub min_file_size: u64,
+    pub use_cache: bool,
 }
 
 impl Default for SimilarImageConfig {
@@ -35,6 +36,7 @@ impl Default for SimilarImageConfig {
             max_hamming_distance: 4,
             hash_algorithm: ImageHashAlgorithm::Gradient,
             min_file_size: 1024, // 1KB minimum by default
+            use_cache: true,
         }
     }
 }
@@ -123,7 +125,14 @@ impl SimilarImageFinder {
 
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.len() >= self.config.min_file_size {
-                        candidate_paths.push((path.to_path_buf(), metadata.len()));
+                        let modified_secs = metadata
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+
+                        candidate_paths.push((path.to_path_buf(), metadata.len(), modified_secs));
                         total_discovered += 1;
                         if total_discovered % 500 == 0 {
                             on_progress(ProgressEvent::FilesDiscovered {
@@ -148,13 +157,32 @@ impl SimilarImageFinder {
             total_files: candidate_paths.len(),
         });
 
+        let cache = if self.config.use_cache {
+            Some(crate::cache::ScanCache::load_or_create("img_cache"))
+        } else {
+            None
+        };
+
         let algo = self.config.hash_algorithm;
         let hashed_images: Vec<ScannedImage> = candidate_paths
             .into_par_iter()
-            .filter_map(|(path, size)| {
+            .filter_map(|(path, size, modified_secs)| {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+
+                if let Some(c) = &cache {
+                    if let Some((width, height, hash)) = c.get_image_hash(&path, size, modified_secs) {
+                        return Some(ScannedImage {
+                            path,
+                            size,
+                            width,
+                            height,
+                            hash,
+                        });
+                    }
+                }
+
                 match compute_image_hash(&path, algo) {
                     Ok((width, height, hash)) => Some(ScannedImage {
                         path,
@@ -167,6 +195,30 @@ impl SimilarImageFinder {
                 }
             })
             .collect();
+
+        // Update and save cache with newly computed image hashes
+        if let Some(mut c) = cache {
+            for img in &hashed_images {
+                let modified_secs = img
+                    .path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                c.insert_image_hash(
+                    img.path.clone(),
+                    img.size,
+                    modified_secs,
+                    img.width,
+                    img.height,
+                    img.hash,
+                );
+            }
+            let _ = c.save();
+        }
 
         if self.cancellation_token.is_cancelled() || hashed_images.len() < 2 {
             return Ok(Vec::new());

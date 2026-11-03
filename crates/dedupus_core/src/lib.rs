@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod cleaner;
 pub mod common;
 pub mod duplicate;
@@ -5,6 +6,7 @@ pub mod empty_file;
 pub mod empty_folder;
 pub mod similar_image;
 
+pub use cache::ScanCache;
 pub use cleaner::{delete_permanently, move_to_trash, replace_with_hardlinks, CleanReport};
 pub use common::{CancellationToken, HashAlgorithm, ProgressEvent, ScannedFile};
 pub use duplicate::{DuplicateFinder, DuplicateFinderConfig, DuplicateGroup};
@@ -103,6 +105,7 @@ mod tests {
             max_hamming_distance: 2,
             hash_algorithm: ImageHashAlgorithm::Gradient,
             min_file_size: 10,
+            use_cache: false,
         };
         let token = CancellationToken::new();
         let finder = SimilarImageFinder::new(config, token);
@@ -140,5 +143,26 @@ mod tests {
         let trash_report = move_to_trash(std::slice::from_ref(&f2));
         assert_eq!(trash_report.successful.len(), 1);
         assert!(!f2.exists());
+    }
+
+    #[test]
+    fn test_scan_cache() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_file = temp_dir.path().join("test_cache.json");
+
+        let mut cache = ScanCache::load_from_path(&cache_file).unwrap();
+        let dummy_path = std::path::PathBuf::from("test/file.txt");
+
+        // Initially empty
+        assert_eq!(cache.get_file_hash(&dummy_path, 100, 1000), None);
+
+        // Insert and verify
+        cache.insert_file_hash(dummy_path.clone(), 100, 1000, "hash123".to_string());
+        assert_eq!(cache.get_file_hash(&dummy_path, 100, 1000), Some("hash123"));
+
+        // Save and reload
+        cache.save().unwrap();
+        let reloaded = ScanCache::load_from_path(&cache_file).unwrap();
+        assert_eq!(reloaded.get_file_hash(&dummy_path, 100, 1000), Some("hash123"));
     }
 }

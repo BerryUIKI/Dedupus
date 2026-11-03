@@ -135,6 +135,50 @@ body {
   font-size: 0.85rem;
 }
 
+.cache-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background-color: #0f172a;
+  border: 1px solid var(--card-border);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.cache-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cache-toggle input {
+  cursor: pointer;
+  accent-color: #38bdf8;
+}
+
+.zap-active {
+  color: #38bdf8;
+}
+
+.clear-cache-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+.clear-cache-btn:hover:not(:disabled) {
+  color: #f87171;
+}
+
 .scan-btn {
   display: flex;
   align-items: center;

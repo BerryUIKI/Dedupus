@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use dedupus_core::{
     CancellationToken, DuplicateFinder, DuplicateFinderConfig, EmptyFileFinder,
     EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
-    ImageHashAlgorithm, ProgressEvent, SimilarImageConfig, SimilarImageFinder,
+    ImageHashAlgorithm, ProgressEvent, ScanCache, SimilarImageConfig, SimilarImageFinder,
 };
 use std::path::PathBuf;
 
@@ -35,6 +35,16 @@ impl From<CliHashAlgo> for HashAlgorithm {
 }
 
 #[derive(Subcommand, Debug)]
+enum CacheAction {
+    /// Show cached hash statistics
+    Stats,
+    /// Prune cache entries for files that no longer exist
+    Prune,
+    /// Clear all cached hashes
+    Clear,
+}
+
+#[derive(Subcommand, Debug)]
 enum Commands {
     /// Search for duplicate files
     Dup {
@@ -57,6 +67,10 @@ enum Commands {
         /// Hashing algorithm
         #[arg(short, long, value_enum, default_value_t = CliHashAlgo::Blake3)]
         algo: CliHashAlgo,
+
+        /// Disable hash caching
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Search for similar images using perceptual hashing
@@ -76,6 +90,10 @@ enum Commands {
         /// Perceptual algorithm: gradient (dHash) or average (aHash)
         #[arg(short, long, default_value = "gradient")]
         algo: String,
+
+        /// Disable hash caching
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Search for empty files
@@ -106,6 +124,12 @@ enum Commands {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+
+    /// Manage persistent scan cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
 }
 
 fn main() -> Result<()> {
@@ -119,6 +143,7 @@ fn main() -> Result<()> {
             min_size,
             max_size,
             algo,
+            no_cache,
         } => {
             println!("🔍 Scanning for duplicate files in: {:?}", directories);
 
@@ -128,6 +153,7 @@ fn main() -> Result<()> {
                 min_file_size: min_size,
                 max_file_size: max_size,
                 hash_algorithm: algo.into(),
+                use_cache: !no_cache,
             };
 
             let finder = DuplicateFinder::new(config, token);
@@ -169,6 +195,7 @@ fn main() -> Result<()> {
             exclude,
             distance,
             algo,
+            no_cache,
         } => {
             println!("🖼️ Scanning for similar images in: {:?}", directories);
 
@@ -184,6 +211,7 @@ fn main() -> Result<()> {
                 max_hamming_distance: distance,
                 hash_algorithm,
                 min_file_size: 1024,
+                use_cache: !no_cache,
             };
 
             let finder = SimilarImageFinder::new(config, token);
@@ -271,6 +299,33 @@ fn main() -> Result<()> {
                 }
             }
         }
+
+        Commands::Cache { action } => match action {
+            CacheAction::Stats => {
+                let dup_cache = ScanCache::load_or_create("dup_cache");
+                let img_cache = ScanCache::load_or_create("img_cache");
+                println!("📊 Scan Cache Statistics:");
+                println!("  - Cached duplicate file hashes: {}", dup_cache.file_hashes.len());
+                println!("  - Cached perceptual image hashes: {}", img_cache.image_hashes.len());
+                println!("  - Cache directory: {}", ScanCache::default_cache_path("").parent().unwrap().display());
+            }
+            CacheAction::Prune => {
+                let mut dup_cache = ScanCache::load_or_create("dup_cache");
+                let mut img_cache = ScanCache::load_or_create("img_cache");
+                let pruned_dup = dup_cache.prune_missing();
+                let pruned_img = img_cache.prune_missing();
+                let _ = dup_cache.save();
+                let _ = img_cache.save();
+                println!("🧹 Pruned {} missing file hashes and {} missing image hashes.", pruned_dup, pruned_img);
+            }
+            CacheAction::Clear => {
+                let mut dup_cache = ScanCache::load_or_create("dup_cache");
+                let mut img_cache = ScanCache::load_or_create("img_cache");
+                dup_cache.clear()?;
+                img_cache.clear()?;
+                println!("✨ Cache cleared successfully!");
+            }
+        },
     }
 
     Ok(())

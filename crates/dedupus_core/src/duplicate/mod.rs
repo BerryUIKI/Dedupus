@@ -17,6 +17,7 @@ pub struct DuplicateFinderConfig {
     pub min_file_size: u64,
     pub max_file_size: Option<u64>,
     pub hash_algorithm: HashAlgorithm,
+    pub use_cache: bool,
 }
 
 impl Default for DuplicateFinderConfig {
@@ -27,6 +28,7 @@ impl Default for DuplicateFinderConfig {
             min_file_size: 1, // Skip empty files in duplicate scanner by default
             max_file_size: None,
             hash_algorithm: HashAlgorithm::Blake3,
+            use_cache: true,
         }
     }
 }
@@ -180,6 +182,12 @@ impl DuplicateFinder {
             total_files: total_to_hash,
         });
 
+        let cache = if self.config.use_cache {
+            Some(crate::cache::ScanCache::load_or_create("dup_cache"))
+        } else {
+            None
+        };
+
         let algo = self.config.hash_algorithm;
         let full_hashes: Vec<(u64, String, ScannedFile)> = full_hash_candidates
             .into_par_iter()
@@ -187,10 +195,35 @@ impl DuplicateFinder {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+
+                // Check cache if enabled
+                if let Some(c) = &cache {
+                    if let Some(h) = c.get_file_hash(
+                        &file.path,
+                        file.size,
+                        file.modified_secs.unwrap_or(0),
+                    ) {
+                        return Some((file.size, h.to_string(), file));
+                    }
+                }
+
                 let hash = compute_full_hash(&file.path, algo).ok()?;
                 Some((file.size, hash, file))
             })
             .collect();
+
+        // Update and save cache with newly computed hashes
+        if let Some(mut c) = cache {
+            for (size, hash, file) in &full_hashes {
+                c.insert_file_hash(
+                    file.path.clone(),
+                    *size,
+                    file.modified_secs.unwrap_or(0),
+                    hash.clone(),
+                );
+            }
+            let _ = c.save();
+        }
 
         // Group by (size, full_hash)
         let mut duplicates_map: HashMap<(u64, String), Vec<ScannedFile>> = HashMap::new();

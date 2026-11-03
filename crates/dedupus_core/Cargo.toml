@@ -14,6 +14,7 @@ walkdir.workspace = true
 ignore.workspace = true
 memmap2.workspace = true
 trash.workspace = true
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
