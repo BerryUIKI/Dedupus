@@ -31,8 +31,9 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
 - [x] **Disk Hygiene**:
   - [x] Empty files & empty directory trees.
   - [x] Temporary & cache files.
-  - [ ] Broken symlinks / invalid shortcuts.
-  - [ ] Broken media files (corrupted images, unreadable archives).
+  - [x] Broken symlinks.
+  - [ ] Invalid Windows shortcuts (.lnk).
+  - [x] Broken media files (corrupted images, unreadable archives, invalid audio).
   - [x] Big files analyzer.
 - [x] **Safe Cleaning Actions**: Move to Recycle Bin / Trash, hardlinking, or permanent deletion.
 - [x] **Scan Cache**: Persist file hashes across scans to dramatically speed up subsequent runs.

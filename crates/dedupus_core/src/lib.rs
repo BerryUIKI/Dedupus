@@ -1,4 +1,5 @@
 pub mod big_file;
+pub mod broken_file;
 pub mod cache;
 pub mod cleaner;
 pub mod common;
@@ -11,6 +12,7 @@ pub mod similar_video;
 pub mod temp_file;
 
 pub use big_file::{BigFileFinder, BigFileFinderConfig};
+pub use broken_file::{BrokenFile, BrokenFileFinder, BrokenFileFinderConfig};
 pub use cache::ScanCache;
 pub use cleaner::{delete_permanently, move_to_trash, replace_with_hardlinks, CleanReport};
 pub use common::{CancellationToken, HashAlgorithm, ProgressEvent, ScannedFile};
@@ -303,6 +305,51 @@ mod tests {
         assert!(found.iter().any(|f| f.reason == "Backup copy"));
         assert!(found.iter().any(|f| f.reason == "Extension .part"));
         assert!(found.iter().any(|f| f.reason == "OS junk file"));
+    }
+
+    #[test]
+    fn test_broken_file_finder() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        // Valid PNG
+        let valid_png: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(8, 8, Rgb([10, 20, 30]));
+        valid_png.save(path.join("valid.png")).unwrap();
+
+        // Corrupted image (garbage with a png extension)
+        std::fs::write(path.join("broken.png"), b"this is not a png").unwrap();
+
+        // Corrupted archive and PDF
+        std::fs::write(path.join("bad.zip"), b"not a zip file").unwrap();
+        std::fs::write(path.join("broken.pdf"), b"just some text").unwrap();
+
+        // Valid archive header and PDF header are not reported
+        std::fs::write(path.join("good.zip"), b"PK\x03\x04rest-of-data").unwrap();
+        std::fs::write(path.join("good.pdf"), b"%PDF-1.7\nrest").unwrap();
+
+        // Unrelated file is ignored
+        std::fs::write(path.join("notes.txt"), b"hello").unwrap();
+
+        let config = BrokenFileFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            excluded_directories: vec![],
+            check_images: true,
+            check_archives: true,
+            check_audio: true,
+            check_symlinks: true,
+        };
+        let token = CancellationToken::new();
+        let finder = BrokenFileFinder::new(config, token);
+        let broken = finder.find_broken_files(|_| {}).unwrap();
+
+        assert_eq!(broken.len(), 3);
+        assert!(broken.iter().any(|b| b.path.ends_with("broken.png")));
+        assert!(broken.iter().any(|b| b.path.ends_with("bad.zip")));
+        assert!(broken.iter().any(|b| b.path.ends_with("broken.pdf")));
+        assert!(!broken.iter().any(|b| b.path.ends_with("valid.png")));
+        assert!(!broken.iter().any(|b| b.path.ends_with("good.zip")));
+        assert!(!broken.iter().any(|b| b.path.ends_with("notes.txt")));
     }
 
     #[test]

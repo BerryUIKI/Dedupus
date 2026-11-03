@@ -186,6 +186,29 @@ enum Commands {
         extra_extension: Vec<String>,
     },
 
+    /// Find broken or corrupted files (images, archives, PDFs, audio, symlinks)
+    BrokenFiles {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Skip image validation
+        #[arg(long)]
+        no_images: bool,
+
+        /// Skip archive and PDF validation
+        #[arg(long)]
+        no_archives: bool,
+
+        /// Skip audio validation
+        #[arg(long)]
+        no_audio: bool,
+    },
+
     /// Move specified files to the system Recycle Bin / Trash
     Trash {
         /// Files to move to Trash
@@ -530,6 +553,47 @@ fn main() -> Result<()> {
                 total as f64 / (1024.0 * 1024.0)
             );
             for f in &found {
+                println!(
+                    "  {:>10.2} KiB  [{}]  {}",
+                    f.size as f64 / 1024.0,
+                    f.reason,
+                    f.path.display()
+                );
+            }
+        }
+
+        Commands::BrokenFiles {
+            directories,
+            exclude,
+            no_images,
+            no_archives,
+            no_audio,
+        } => {
+            println!("🩺 Scanning for broken files in: {:?}", directories);
+            let config = dedupus_core::BrokenFileFinderConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                check_images: !no_images,
+                check_archives: !no_archives,
+                check_audio: !no_audio,
+                check_symlinks: true,
+            };
+            let finder = dedupus_core::BrokenFileFinder::new(config, token);
+            let broken = finder.find_broken_files(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("📄 Scanned {} files...", count);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            println!("\nFound {} broken files:", broken.len());
+            for f in &broken {
                 println!(
                     "  {:>10.2} KiB  [{}]  {}",
                     f.size as f64 / 1024.0,

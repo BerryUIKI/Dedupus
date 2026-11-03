@@ -70,6 +70,9 @@ cargo run -p dedupus_cli -- big-files <directory_path> [--min-size 104857600] [-
 # Temporary/backup/junk files (default extensions .tmp, .bak, .part, ~ copies, Thumbs.db, ...)
 cargo run -p dedupus_cli -- temp-files <directory_path> [--min-size 0] [--extra-extension .myext]
 
+# Broken files (images fully decoded, archive/PDF magic bytes, audio container probe, broken symlinks)
+cargo run -p dedupus_cli -- broken-files <directory_path> [--no-images] [--no-archives] [--no-audio]
+
 # Move files to system Recycle Bin / Trash
 cargo run -p dedupus_cli -- trash <file_paths...>
 

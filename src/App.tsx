@@ -19,6 +19,7 @@ import {
   Zap,
   ArrowDownWideNarrow,
   Eraser,
+  AlertTriangle,
 } from "lucide-react";
 import "./App.css";
 
@@ -29,6 +30,13 @@ interface ScannedFile {
 }
 
 interface TempFileEntry {
+  path: string;
+  size: number;
+  modified_secs: number | null;
+  reason: string;
+}
+
+interface BrokenFileEntry {
   path: string;
   size: number;
   modified_secs: number | null;
@@ -95,6 +103,7 @@ type Mode =
   | "similar_video"
   | "big_files"
   | "temp_files"
+  | "broken_files"
   | "empty_files"
   | "empty_folders";
 
@@ -128,6 +137,7 @@ export default function App() {
   const [similarVideos, setSimilarVideos] = useState<SimilarVideoGroup[]>([]);
   const [bigFiles, setBigFiles] = useState<ScannedFile[]>([]);
   const [tempFiles, setTempFiles] = useState<TempFileEntry[]>([]);
+  const [brokenFiles, setBrokenFiles] = useState<BrokenFileEntry[]>([]);
   const [emptyFiles, setEmptyFiles] = useState<ScannedFile[]>([]);
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
 
@@ -226,6 +236,15 @@ export default function App() {
             totalBytes
           )} total)`
         );
+      } else if (mode === "broken_files") {
+        const res = await invoke<BrokenFileEntry[]>("scan_broken_files", {
+          directories: [scanPath.trim()],
+          exclude: [],
+        });
+        setBrokenFiles(res);
+        setStatusMsg(
+          `Scan completed: Found ${res.length} broken files`
+        );
       } else if (mode === "empty_files") {
         const res = await invoke<ScannedFile[]>("scan_empty_files", {
           directories: [scanPath.trim()],
@@ -297,6 +316,10 @@ export default function App() {
       for (const file of tempFiles) {
         next.add(file.path);
       }
+    } else if (mode === "broken_files") {
+      for (const file of brokenFiles) {
+        next.add(file.path);
+      }
     } else if (mode === "empty_files") {
       for (const file of emptyFiles) {
         next.add(file.path);
@@ -360,6 +383,12 @@ export default function App() {
           bytes += file.size;
         }
       }
+    } else if (mode === "broken_files") {
+      for (const file of brokenFiles) {
+        if (selectedPaths.has(file.path)) {
+          bytes += file.size;
+        }
+      }
     }
     return bytes;
   }, [
@@ -370,6 +399,7 @@ export default function App() {
     similarVideos,
     bigFiles,
     tempFiles,
+    brokenFiles,
     mode,
   ]);
 
@@ -431,6 +461,8 @@ export default function App() {
         setBigFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
       } else if (mode === "temp_files") {
         setTempFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
+      } else if (mode === "broken_files") {
+        setBrokenFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
       }
 
       setSelectedPaths(new Set());
@@ -538,6 +570,16 @@ export default function App() {
           >
             <Eraser size={15} />
             <span>Temp Files</span>
+          </button>
+          <button
+            className={`tab-btn ${mode === "broken_files" ? "active" : ""}`}
+            onClick={() => {
+              setMode("broken_files");
+              setSelectedPaths(new Set());
+            }}
+          >
+            <AlertTriangle size={15} />
+            <span>Broken Files</span>
           </button>
           <button
             className={`tab-btn ${mode === "empty_files" ? "active" : ""}`}
@@ -746,6 +788,7 @@ export default function App() {
         (mode === "similar_video" && similarVideos.length > 0) ||
         (mode === "big_files" && bigFiles.length > 0) ||
         (mode === "temp_files" && tempFiles.length > 0) ||
+        (mode === "broken_files" && brokenFiles.length > 0) ||
         (mode === "empty_files" && emptyFiles.length > 0) ||
         (mode === "empty_folders" && emptyFolders.length > 0)) && (
         <div className="selection-toolbar">
@@ -757,7 +800,9 @@ export default function App() {
             >
               <CheckSquare size={14} />
               <span>
-                {mode === "big_files" || mode === "temp_files"
+                {mode === "big_files" ||
+                mode === "temp_files" ||
+                mode === "broken_files"
                   ? "Select All Files"
                   : "Select All Duplicates (Keep 1st)"}
               </span>
@@ -1149,6 +1194,57 @@ export default function App() {
                           onChange={() => toggleSelect(file.path)}
                         />
                         <span className="temp-reason-badge">{file.reason}</span>
+                        <span className="file-path">{file.path}</span>
+                      </label>
+                      <div className="image-meta">
+                        <span className="size-badge">
+                          {formatBytes(file.size)}
+                        </span>
+                        <button
+                          className="icon-action-btn"
+                          title="Copy path"
+                          onClick={() =>
+                            navigator.clipboard.writeText(file.path)
+                          }
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {mode === "broken_files" && (
+          <div className="list-view">
+            {brokenFiles.length === 0 ? (
+              <div className="empty-state">
+                <AlertTriangle size={48} opacity={0.3} />
+                <p>No broken files found, or scan not started.</p>
+              </div>
+            ) : (
+              <ul className="simple-list">
+                {brokenFiles.map((file, idx) => {
+                  const isSelected = selectedPaths.has(file.path);
+                  return (
+                    <li
+                      key={idx}
+                      className={`file-item ${
+                        isSelected ? "selected-item" : ""
+                      }`}
+                    >
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(file.path)}
+                        />
+                        <span className="broken-reason-badge">
+                          {file.reason}
+                        </span>
                         <span className="file-path">{file.path}</span>
                       </label>
                       <div className="image-meta">

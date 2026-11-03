@@ -1,7 +1,8 @@
 use dedupus_core::{
     delete_permanently as core_delete_permanently, move_to_trash as core_move_to_trash,
     replace_with_hardlinks as core_replace_with_hardlinks, BigFileFinder, BigFileFinderConfig,
-    CancellationToken, CleanReport, DuplicateFinder, DuplicateFinderConfig, DuplicateGroup,
+    BrokenFile, BrokenFileFinder, BrokenFileFinderConfig, CancellationToken, CleanReport,
+    DuplicateFinder, DuplicateFinderConfig, DuplicateGroup,
     EmptyFileFinder, EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig,
     HashAlgorithm, ImageHashAlgorithm, ScanCache, ScannedFile, SimilarAudioConfig,
     SimilarAudioFinder, SimilarAudioGroup, SimilarImageConfig, SimilarImageFinder,
@@ -174,6 +175,25 @@ fn scan_temp_files(
 }
 
 #[tauri::command]
+fn scan_broken_files(
+    directories: Vec<String>,
+    exclude: Vec<String>,
+) -> Result<Vec<BrokenFile>, String> {
+    let config = BrokenFileFinderConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        check_images: true,
+        check_archives: true,
+        check_audio: true,
+        check_symlinks: true,
+    };
+
+    let token = CancellationToken::new();
+    let finder = BrokenFileFinder::new(config, token);
+    finder.find_broken_files(|_| {}).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_to_trash(paths: Vec<String>) -> Result<CleanReport, String> {
     let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     Ok(core_move_to_trash(&path_bufs))
@@ -221,6 +241,7 @@ pub fn run() {
             scan_empty_folders,
             scan_big_files,
             scan_temp_files,
+            scan_broken_files,
             delete_to_trash,
             delete_permanently,
             replace_with_hardlinks,
