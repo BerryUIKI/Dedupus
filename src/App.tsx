@@ -17,6 +17,7 @@ import {
   CheckSquare,
   Square,
   Zap,
+  ArrowDownWideNarrow,
 } from "lucide-react";
 import "./App.css";
 
@@ -84,6 +85,7 @@ type Mode =
   | "similar_images"
   | "similar_audio"
   | "similar_video"
+  | "big_files"
   | "empty_files"
   | "empty_folders";
 
@@ -103,6 +105,8 @@ export default function App() {
   const [imageAlgo, setImageAlgo] = useState("gradient");
   const [hammingDistance, setHammingDistance] = useState<number>(4);
   const [durationDiff, setDurationDiff] = useState<number>(2.0);
+  const [bigMinMb, setBigMinMb] = useState<number>(100);
+  const [bigLimit, setBigLimit] = useState<number>(100);
   const [useCache, setUseCache] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -112,6 +116,7 @@ export default function App() {
   const [similarImages, setSimilarImages] = useState<SimilarImageGroup[]>([]);
   const [similarAudio, setSimilarAudio] = useState<SimilarAudioGroup[]>([]);
   const [similarVideos, setSimilarVideos] = useState<SimilarVideoGroup[]>([]);
+  const [bigFiles, setBigFiles] = useState<ScannedFile[]>([]);
   const [emptyFiles, setEmptyFiles] = useState<ScannedFile[]>([]);
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
 
@@ -183,6 +188,20 @@ export default function App() {
         setStatusMsg(
           `Scan completed: Found ${res.length} similar video groups (${totalVideos} total videos)`
         );
+      } else if (mode === "big_files") {
+        const res = await invoke<ScannedFile[]>("scan_big_files", {
+          directories: [scanPath.trim()],
+          exclude: [],
+          minSize: Math.max(1, Math.round(bigMinMb * 1024 * 1024)),
+          maxResults: Math.max(1, bigLimit),
+        });
+        setBigFiles(res);
+        const totalBytes = res.reduce((acc, f) => acc + f.size, 0);
+        setStatusMsg(
+          `Scan completed: Found ${res.length} large files (${formatBytes(
+            totalBytes
+          )} total)`
+        );
       } else if (mode === "empty_files") {
         const res = await invoke<ScannedFile[]>("scan_empty_files", {
           directories: [scanPath.trim()],
@@ -246,6 +265,10 @@ export default function App() {
           next.add(group.videos[i].path);
         }
       }
+    } else if (mode === "big_files") {
+      for (const file of bigFiles) {
+        next.add(file.path);
+      }
     } else if (mode === "empty_files") {
       for (const file of emptyFiles) {
         next.add(file.path);
@@ -297,9 +320,15 @@ export default function App() {
           }
         }
       }
+    } else if (mode === "big_files") {
+      for (const file of bigFiles) {
+        if (selectedPaths.has(file.path)) {
+          bytes += file.size;
+        }
+      }
     }
     return bytes;
-  }, [selectedPaths, duplicates, similarImages, similarAudio, similarVideos, mode]);
+  }, [selectedPaths, duplicates, similarImages, similarAudio, similarVideos, bigFiles, mode]);
 
   // Trash action
   const handleMoveToTrash = async () => {
@@ -355,6 +384,8 @@ export default function App() {
         setEmptyFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
       } else if (mode === "empty_folders") {
         setEmptyFolders((prev) => prev.filter((p) => !succSet.has(p)));
+      } else if (mode === "big_files") {
+        setBigFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
       }
 
       setSelectedPaths(new Set());
@@ -442,6 +473,16 @@ export default function App() {
           >
             <Video size={15} />
             <span>Video</span>
+          </button>
+          <button
+            className={`tab-btn ${mode === "big_files" ? "active" : ""}`}
+            onClick={() => {
+              setMode("big_files");
+              setSelectedPaths(new Set());
+            }}
+          >
+            <ArrowDownWideNarrow size={15} />
+            <span>Big Files</span>
           </button>
           <button
             className={`tab-btn ${mode === "empty_files" ? "active" : ""}`}
@@ -559,6 +600,33 @@ export default function App() {
           </span>
         )}
 
+        {mode === "big_files" && (
+          <>
+            <div className="input-group">
+              <label>Min Size (MB):</label>
+              <input
+                type="number"
+                min={1}
+                value={bigMinMb}
+                onChange={(e) => setBigMinMb(Number(e.target.value))}
+                style={{ width: "80px" }}
+                disabled={scanning || cleaning}
+              />
+            </div>
+            <div className="input-group">
+              <label>Top N:</label>
+              <input
+                type="number"
+                min={1}
+                value={bigLimit}
+                onChange={(e) => setBigLimit(Number(e.target.value))}
+                style={{ width: "70px" }}
+                disabled={scanning || cleaning}
+              />
+            </div>
+          </>
+        )}
+
         <div className="cache-group">
           <label
             className="cache-toggle"
@@ -607,6 +675,7 @@ export default function App() {
         (mode === "similar_images" && similarImages.length > 0) ||
         (mode === "similar_audio" && similarAudio.length > 0) ||
         (mode === "similar_video" && similarVideos.length > 0) ||
+        (mode === "big_files" && bigFiles.length > 0) ||
         (mode === "empty_files" && emptyFiles.length > 0) ||
         (mode === "empty_folders" && emptyFolders.length > 0)) && (
         <div className="selection-toolbar">
@@ -617,7 +686,11 @@ export default function App() {
               disabled={cleaning}
             >
               <CheckSquare size={14} />
-              <span>Select All Duplicates (Keep 1st)</span>
+              <span>
+                {mode === "big_files"
+                  ? "Select All Files"
+                  : "Select All Duplicates (Keep 1st)"}
+              </span>
             </button>
             <button
               className="tool-btn"
@@ -926,6 +999,57 @@ export default function App() {
                   </ul>
                 </div>
               ))
+            )}
+          </div>
+        )}
+
+        {mode === "big_files" && (
+          <div className="list-view">
+            {bigFiles.length === 0 ? (
+              <div className="empty-state">
+                <ArrowDownWideNarrow size={48} opacity={0.3} />
+                <p>
+                  No files above the size threshold found, or scan not started.
+                </p>
+              </div>
+            ) : (
+              <ul className="simple-list">
+                {bigFiles.map((file, idx) => {
+                  const isSelected = selectedPaths.has(file.path);
+                  return (
+                    <li
+                      key={idx}
+                      className={`file-item ${
+                        isSelected ? "selected-item" : ""
+                      }`}
+                    >
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(file.path)}
+                        />
+                        <span className="rank-badge">#{idx + 1}</span>
+                        <span className="file-path">{file.path}</span>
+                      </label>
+                      <div className="image-meta">
+                        <span className="size-badge big-size-badge">
+                          {formatBytes(file.size)}
+                        </span>
+                        <button
+                          className="icon-action-btn"
+                          title="Copy path"
+                          onClick={() =>
+                            navigator.clipboard.writeText(file.path)
+                          }
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
         )}

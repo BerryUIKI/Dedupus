@@ -33,7 +33,7 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
   - [ ] Temporary & cache files.
   - [ ] Broken symlinks / invalid shortcuts.
   - [ ] Broken media files (corrupted images, unreadable archives).
-  - [ ] Big files analyzer.
+  - [x] Big files analyzer.
 - [x] **Safe Cleaning Actions**: Move to Recycle Bin / Trash, hardlinking, or permanent deletion.
 - [x] **Scan Cache**: Persist file hashes across scans to dramatically speed up subsequent runs.
 

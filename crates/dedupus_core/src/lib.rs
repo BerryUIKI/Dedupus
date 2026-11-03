@@ -1,3 +1,4 @@
+pub mod big_file;
 pub mod cache;
 pub mod cleaner;
 pub mod common;
@@ -8,6 +9,7 @@ pub mod similar_audio;
 pub mod similar_image;
 pub mod similar_video;
 
+pub use big_file::{BigFileFinder, BigFileFinderConfig};
 pub use cache::ScanCache;
 pub use cleaner::{delete_permanently, move_to_trash, replace_with_hardlinks, CleanReport};
 pub use common::{CancellationToken, HashAlgorithm, ProgressEvent, ScannedFile};
@@ -240,6 +242,34 @@ mod tests {
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].videos.len(), 2);
+    }
+
+    #[test]
+    fn test_big_file_finder() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        let small = path.join("small.bin");
+        let medium = path.join("medium.bin");
+        let large = path.join("large.bin");
+
+        std::fs::write(&small, vec![0u8; 500]).unwrap();
+        std::fs::write(&medium, vec![0u8; 1500]).unwrap();
+        std::fs::write(&large, vec![0u8; 3000]).unwrap();
+
+        let config = BigFileFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            excluded_directories: vec![],
+            min_file_size: 1000,
+            max_results: 2,
+        };
+        let token = CancellationToken::new();
+        let finder = BigFileFinder::new(config, token);
+        let files = finder.find_big_files(|_| {}).unwrap();
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, large);
+        assert_eq!(files[1].path, medium);
     }
 
     #[test]

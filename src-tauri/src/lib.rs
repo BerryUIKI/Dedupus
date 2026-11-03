@@ -1,11 +1,11 @@
 use dedupus_core::{
     delete_permanently as core_delete_permanently, move_to_trash as core_move_to_trash,
-    replace_with_hardlinks as core_replace_with_hardlinks, CancellationToken, CleanReport,
-    DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder,
-    EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
-    ImageHashAlgorithm, ScanCache, ScannedFile, SimilarAudioConfig, SimilarAudioFinder,
-    SimilarAudioGroup, SimilarImageConfig, SimilarImageFinder, SimilarImageGroup,
-    SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup,
+    replace_with_hardlinks as core_replace_with_hardlinks, BigFileFinder, BigFileFinderConfig,
+    CancellationToken, CleanReport, DuplicateFinder, DuplicateFinderConfig, DuplicateGroup,
+    EmptyFileFinder, EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig,
+    HashAlgorithm, ImageHashAlgorithm, ScanCache, ScannedFile, SimilarAudioConfig,
+    SimilarAudioFinder, SimilarAudioGroup, SimilarImageConfig, SimilarImageFinder,
+    SimilarImageGroup, SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup,
 };
 use std::path::PathBuf;
 
@@ -136,6 +136,25 @@ fn scan_empty_folders(
 }
 
 #[tauri::command]
+fn scan_big_files(
+    directories: Vec<String>,
+    exclude: Vec<String>,
+    min_size: Option<u64>,
+    max_results: Option<usize>,
+) -> Result<Vec<ScannedFile>, String> {
+    let config = BigFileFinderConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        min_file_size: min_size.unwrap_or(100 * 1024 * 1024),
+        max_results: max_results.unwrap_or(100),
+    };
+
+    let token = CancellationToken::new();
+    let finder = BigFileFinder::new(config, token);
+    finder.find_big_files(|_| {}).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_to_trash(paths: Vec<String>) -> Result<CleanReport, String> {
     let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     Ok(core_move_to_trash(&path_bufs))
@@ -181,6 +200,7 @@ pub fn run() {
             scan_similar_videos,
             scan_empty_files,
             scan_empty_folders,
+            scan_big_files,
             delete_to_trash,
             delete_permanently,
             replace_with_hardlinks,

@@ -148,6 +148,25 @@ enum Commands {
         exclude: Vec<PathBuf>,
     },
 
+    /// List the largest files in the given directories
+    BigFiles {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Minimum file size in bytes (default: 100 MiB)
+        #[arg(short, long, default_value_t = 100 * 1024 * 1024)]
+        min_size: u64,
+
+        /// Maximum number of results
+        #[arg(short = 'l', long, default_value_t = 100)]
+        limit: usize,
+    },
+
     /// Move specified files to the system Recycle Bin / Trash
     Trash {
         /// Files to move to Trash
@@ -409,6 +428,49 @@ fn main() -> Result<()> {
             println!("\nFound {} empty folders:", empty_folders.len());
             for folder in empty_folders {
                 println!("  - {}", folder.display());
+            }
+        }
+
+        Commands::BigFiles {
+            directories,
+            exclude,
+            min_size,
+            limit,
+        } => {
+            println!("📦 Scanning for files >= {} bytes in: {:?}", min_size, directories);
+            let config = dedupus_core::BigFileFinderConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                min_file_size: min_size,
+                max_results: limit,
+            };
+            let finder = dedupus_core::BigFileFinder::new(config, token);
+            let files = finder.find_big_files(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("📄 Scanned {} files...", count);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            let total: u64 = files.iter().map(|f| f.size).sum();
+            println!(
+                "\nFound {} large files (Total: {:.2} MiB):",
+                files.len(),
+                total as f64 / (1024.0 * 1024.0)
+            );
+            for (idx, f) in files.iter().enumerate() {
+                println!(
+                    "  {:>3}. {:>10.2} MiB  {}",
+                    idx + 1,
+                    f.size as f64 / (1024.0 * 1024.0),
+                    f.path.display()
+                );
             }
         }
 

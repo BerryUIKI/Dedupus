@@ -64,6 +64,9 @@ cargo run -p dedupus_cli -- video <directory_path> [--duration-diff 2.0]
 cargo run -p dedupus_cli -- empty-files <directory_path>
 cargo run -p dedupus_cli -- empty-folders <directory_path>
 
+# Largest files (default: >= 100 MiB, top 100)
+cargo run -p dedupus_cli -- big-files <directory_path> [--min-size 104857600] [--limit 100]
+
 # Move files to system Recycle Bin / Trash
 cargo run -p dedupus_cli -- trash <file_paths...>
 

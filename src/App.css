@@ -190,6 +190,20 @@ body {
   cursor: help;
 }
 
+.rank-badge {
+  color: #64748b;
+  font-family: Consolas, monospace;
+  font-size: 0.75rem;
+  min-width: 34px;
+  flex-shrink: 0;
+}
+
+.big-size-badge {
+  color: #fbbf24;
+  font-weight: 600;
+  font-family: Consolas, monospace;
+}
+
 .scan-btn {
   display: flex;
   align-items: center;
