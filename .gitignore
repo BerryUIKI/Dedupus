@@ -36,6 +36,3 @@ desktop.ini
 .env
 .env.*
 !.env.example
-
-# Local helper scripts
-push.bat

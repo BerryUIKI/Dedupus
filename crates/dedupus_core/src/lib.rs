@@ -1,9 +1,11 @@
+pub mod cleaner;
 pub mod common;
 pub mod duplicate;
 pub mod empty_file;
 pub mod empty_folder;
 pub mod similar_image;
 
+pub use cleaner::{delete_permanently, move_to_trash, replace_with_hardlinks, CleanReport};
 pub use common::{CancellationToken, HashAlgorithm, ProgressEvent, ScannedFile};
 pub use duplicate::{DuplicateFinder, DuplicateFinderConfig, DuplicateGroup};
 pub use empty_file::{EmptyFileFinder, EmptyFileFinderConfig};
@@ -108,5 +110,35 @@ mod tests {
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].images.len(), 2);
+    }
+
+    #[test]
+    fn test_cleaner_actions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        let f1 = path.join("target.txt");
+        let f2 = path.join("dup1.txt");
+        let f3 = path.join("delete_me.txt");
+
+        File::create(&f1).unwrap().write_all(b"Original content").unwrap();
+        File::create(&f2).unwrap().write_all(b"Original content").unwrap();
+        File::create(&f3).unwrap().write_all(b"Delete me").unwrap();
+
+        // Test permanent deletion
+        let del_report = delete_permanently(std::slice::from_ref(&f3));
+        assert_eq!(del_report.successful.len(), 1);
+        assert!(!f3.exists());
+
+        // Test hardlinking
+        let link_report = replace_with_hardlinks(&f1, std::slice::from_ref(&f2));
+        assert_eq!(link_report.successful.len(), 1);
+        assert!(f2.exists());
+        assert_eq!(std::fs::read_to_string(&f2).unwrap(), "Original content");
+
+        // Test trash
+        let trash_report = move_to_trash(std::slice::from_ref(&f2));
+        assert_eq!(trash_report.successful.len(), 1);
+        assert!(!f2.exists());
     }
 }

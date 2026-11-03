@@ -99,6 +99,13 @@ enum Commands {
         #[arg(short, long)]
         exclude: Vec<PathBuf>,
     },
+
+    /// Move specified files to the system Recycle Bin / Trash
+    Trash {
+        /// Files to move to Trash
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -246,6 +253,22 @@ fn main() -> Result<()> {
             println!("\nFound {} empty folders:", empty_folders.len());
             for folder in empty_folders {
                 println!("  - {}", folder.display());
+            }
+        }
+
+        Commands::Trash { files } => {
+            println!("🗑️ Moving {} files to Recycle Bin...", files.len());
+            let report = dedupus_core::move_to_trash(&files);
+            println!(
+                "✅ Successfully moved {} files (Freed: {} bytes)",
+                report.successful.len(),
+                report.bytes_freed
+            );
+            if !report.failed.is_empty() {
+                println!("⚠️ Failed to move {} files:", report.failed.len());
+                for (path, err) in report.failed {
+                    println!("  - {}: {}", path.display(), err);
+                }
             }
         }
     }

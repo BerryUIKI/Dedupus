@@ -1,5 +1,7 @@
 use dedupus_core::{
-    CancellationToken, DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder,
+    delete_permanently as core_delete_permanently, move_to_trash as core_move_to_trash,
+    replace_with_hardlinks as core_replace_with_hardlinks, CancellationToken, CleanReport,
+    DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder,
     EmptyFileFinderConfig, EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm,
     ImageHashAlgorithm, ScannedFile, SimilarImageConfig, SimilarImageFinder, SimilarImageGroup,
 };
@@ -89,6 +91,25 @@ fn scan_empty_folders(
     finder.find_empty_folders().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn delete_to_trash(paths: Vec<String>) -> Result<CleanReport, String> {
+    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    Ok(core_move_to_trash(&path_bufs))
+}
+
+#[tauri::command]
+fn delete_permanently(paths: Vec<String>) -> Result<CleanReport, String> {
+    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    Ok(core_delete_permanently(&path_bufs))
+}
+
+#[tauri::command]
+fn replace_with_hardlinks(target: String, duplicates: Vec<String>) -> Result<CleanReport, String> {
+    let target_path = PathBuf::from(target);
+    let dup_paths: Vec<PathBuf> = duplicates.into_iter().map(PathBuf::from).collect();
+    Ok(core_replace_with_hardlinks(&target_path, &dup_paths))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -97,7 +118,10 @@ pub fn run() {
             scan_duplicates,
             scan_similar_images,
             scan_empty_files,
-            scan_empty_folders
+            scan_empty_folders,
+            delete_to_trash,
+            delete_permanently,
+            replace_with_hardlinks
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

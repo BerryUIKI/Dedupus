@@ -59,6 +59,9 @@ cargo run -p dedupus_cli -- image <directory_path> [--distance 4] [--algo gradie
 # Empty files & folders
 cargo run -p dedupus_cli -- empty-files <directory_path>
 cargo run -p dedupus_cli -- empty-folders <directory_path>
+
+# Move files to system Recycle Bin / Trash
+cargo run -p dedupus_cli -- trash <file_paths...>
 ```
 
 ### Frontend & Tauri
