@@ -26,6 +26,8 @@ import {
   Maximize2,
   Minimize2,
   X,
+  Sun,
+  Moon,
 } from "lucide-react";
 import "./App.css";
 
@@ -223,6 +225,24 @@ export default function App() {
   // Set of selected file paths for actions
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [isMaximized, setIsMaximized] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    try {
+      const saved = localStorage.getItem("dedupus-theme");
+      if (saved === "light" || saved === "dark") return saved;
+    } catch {
+      // ignore
+    }
+    return "light";
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("dedupus-theme", theme);
+    } catch {
+      // ignore
+    }
+  }, [theme]);
 
   useEffect(() => {
     let active = true;
@@ -723,28 +743,43 @@ export default function App() {
             <p>{MODE_INFO[mode].subtitle}</p>
           </div>
 
-          <div className="cache-group">
-            <label
-              className="cache-toggle"
-              title="Enable persistent scan cache to accelerate subsequent scans"
-            >
-              <input
-                type="checkbox"
-                checked={useCache}
-                onChange={(e) => setUseCache(e.target.checked)}
-                disabled={scanning || cleaning}
-              />
-              <Zap size={14} className={useCache ? "zap-active" : ""} />
-              <span>Cache</span>
-            </label>
+          <div className="topbar-actions">
             <button
-              className="clear-cache-btn"
-              title="Clear all saved scan cache"
-              onClick={handleClearCache}
-              disabled={scanning || cleaning}
+              className="theme-toggle"
+              onClick={() =>
+                setTheme((prev) => (prev === "light" ? "dark" : "light"))
+              }
+              title={
+                theme === "light" ? "Switch to dark theme" : "Switch to light theme"
+              }
             >
-              Clear
+              {theme === "light" ? <Moon size={14} /> : <Sun size={14} />}
+              <span>{theme === "light" ? "Dark" : "Light"}</span>
             </button>
+
+            <div className="cache-group">
+              <label
+                className="cache-toggle"
+                title="Enable persistent scan cache to accelerate subsequent scans"
+              >
+                <input
+                  type="checkbox"
+                  checked={useCache}
+                  onChange={(e) => setUseCache(e.target.checked)}
+                  disabled={scanning || cleaning}
+                />
+                <Zap size={14} className={useCache ? "zap-active" : ""} />
+                <span>Cache</span>
+              </label>
+              <button
+                className="clear-cache-btn"
+                title="Clear all saved scan cache"
+                onClick={handleClearCache}
+                disabled={scanning || cleaning}
+              >
+                Clear
+              </button>
+            </div>
           </div>
         </header>
 
