@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { LucideIcon } from "lucide-react";
 import {
   FolderSearch,
@@ -217,6 +218,22 @@ export default function App() {
 
   // Set of selected file paths for actions
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+
+  const handleBrowse = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select a folder to scan",
+      });
+      if (typeof selected === "string") {
+        setScanPath(selected);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Folder selection failed: ${msg}`);
+    }
+  };
 
   const handleScan = async () => {
     if (!scanPath.trim()) {
@@ -657,6 +674,16 @@ export default function App() {
             disabled={scanning || cleaning}
           />
         </div>
+
+        <button
+          className="browse-btn"
+          onClick={handleBrowse}
+          disabled={scanning || cleaning}
+          title="Choose a folder to scan"
+        >
+          <FolderOpen size={16} />
+          <span>Browse</span>
+        </button>
 
         {mode === "duplicates" && (
           <>

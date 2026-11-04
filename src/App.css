@@ -309,6 +309,38 @@ body {
   white-space: nowrap;
 }
 
+.browse-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background-color: #1e293b;
+  color: #cbd5e1;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.browse-btn:hover:not(:disabled) {
+  background-color: #273449;
+  border-color: #475569;
+  color: #fff;
+}
+
+.browse-btn:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+.browse-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .scan-btn {
   display: flex;
   align-items: center;
