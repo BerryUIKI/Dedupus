@@ -162,7 +162,6 @@ body {
   border-radius: 13px;
   color: #fff;
   background: linear-gradient(135deg, #6366f1 0%, #22d3ee 120%);
-  box-shadow: 0 10px 26px rgba(99, 102, 241, 0.42);
 }
 
 .brand h1 {
@@ -242,7 +241,6 @@ body {
   border-color: rgba(129, 140, 248, 0.55);
   color: #fff;
   font-weight: 600;
-  box-shadow: 0 8px 22px rgba(79, 70, 229, 0.35);
 }
 
 .nav-item:focus-visible {
@@ -487,9 +485,8 @@ body {
   font-size: 0.86rem;
   font-weight: 600;
   background: linear-gradient(135deg, #6366f1 0%, #22d3ee 130%);
-  box-shadow: 0 10px 26px rgba(79, 70, 229, 0.38);
   cursor: pointer;
-  transition: transform 0.16s ease, filter 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.16s ease, filter 0.2s ease;
 }
 
 .scan-btn:hover:not(:disabled) {
@@ -715,8 +712,6 @@ body {
 
 .result-card:hover {
   border-color: rgba(99, 102, 241, 0.38);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
-  transform: translateY(-1px);
 }
 
 @keyframes rise {
@@ -1014,7 +1009,7 @@ body {
   border-radius: 16px;
   background-color: rgba(10, 15, 28, 0.9);
   backdrop-filter: blur(16px);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
   z-index: 50;
   animation: rise 0.2s ease both;
 }
@@ -1049,9 +1044,8 @@ body {
   font-size: 0.86rem;
   font-weight: 600;
   background: linear-gradient(135deg, #e11d48, #f43f5e);
-  box-shadow: 0 10px 24px rgba(225, 29, 72, 0.35);
   cursor: pointer;
-  transition: transform 0.16s ease, filter 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.16s ease, filter 0.2s ease;
 }
 
 .danger-btn:hover:not(:disabled) {
@@ -1278,12 +1272,11 @@ html[data-theme="light"] .empty-state svg {
 html[data-theme="light"] .result-card {
   background: rgba(255, 255, 255, 0.88);
   border-color: var(--border);
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 html[data-theme="light"] .result-card:hover {
   border-color: rgba(79, 70, 229, 0.3);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.1);
 }
 
 html[data-theme="light"] .card-header {
@@ -1404,7 +1397,7 @@ html[data-theme="light"] .simple-item {
 html[data-theme="light"] .action-footer {
   background-color: rgba(255, 255, 255, 0.94);
   border-color: rgba(15, 23, 42, 0.1);
-  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
 html[data-theme="light"] .footer-count strong {
