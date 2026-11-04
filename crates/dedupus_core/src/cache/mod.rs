@@ -90,13 +90,7 @@ impl ScanCache {
         }
     }
 
-    pub fn insert_file_hash(
-        &mut self,
-        path: PathBuf,
-        size: u64,
-        modified_secs: u64,
-        hash: String,
-    ) {
+    pub fn insert_file_hash(&mut self, path: PathBuf, size: u64, modified_secs: u64, hash: String) {
         self.file_hashes.insert(
             path,
             CachedFileEntry {

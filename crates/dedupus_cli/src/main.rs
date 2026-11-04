@@ -264,7 +264,10 @@ fn main() -> Result<()> {
                 _ => {}
             })?;
 
-            println!("\n🎉 Found {} groups of duplicate files:\n", duplicates.len());
+            println!(
+                "\n🎉 Found {} groups of duplicate files:\n",
+                duplicates.len()
+            );
             for (idx, group) in duplicates.iter().enumerate() {
                 let wasted = group.file_size * (group.files.len() as u64 - 1);
                 println!(
@@ -314,7 +317,10 @@ fn main() -> Result<()> {
                     println!("🖼️ Discovered {} image files...", count);
                 }
                 ProgressEvent::HashingStarted { total_files } => {
-                    println!("⚡ Computing perceptual hashes for {} images...", total_files);
+                    println!(
+                        "⚡ Computing perceptual hashes for {} images...",
+                        total_files
+                    );
                 }
                 ProgressEvent::StageCompleted { stage_name } => {
                     println!("✅ Stage: {}", stage_name);
@@ -362,7 +368,10 @@ fn main() -> Result<()> {
                     println!("🎵 Discovered {} audio files...", count);
                 }
                 ProgressEvent::HashingStarted { total_files } => {
-                    println!("⚡ Computing acoustic fingerprints for {} audio files...", total_files);
+                    println!(
+                        "⚡ Computing acoustic fingerprints for {} audio files...",
+                        total_files
+                    );
                 }
                 ProgressEvent::StageCompleted { stage_name } => {
                     println!("✅ Stage: {}", stage_name);
@@ -370,7 +379,10 @@ fn main() -> Result<()> {
                 _ => {}
             })?;
 
-            println!("\n🎉 Found {} groups of similar audio tracks:\n", groups.len());
+            println!(
+                "\n🎉 Found {} groups of similar audio tracks:\n",
+                groups.len()
+            );
             for (idx, group) in groups.iter().enumerate() {
                 println!("Group #{} [{}]:", idx + 1, group.similarity_info);
                 for track in &group.tracks {
@@ -410,7 +422,10 @@ fn main() -> Result<()> {
                     println!("🎬 Discovered {} video files...", count);
                 }
                 ProgressEvent::HashingStarted { total_files } => {
-                    println!("⚡ Extracting keyframe hashes for {} videos...", total_files);
+                    println!(
+                        "⚡ Extracting keyframe hashes for {} videos...",
+                        total_files
+                    );
                 }
                 ProgressEvent::StageCompleted { stage_name } => {
                     println!("✅ Stage: {}", stage_name);
@@ -447,7 +462,7 @@ fn main() -> Result<()> {
                 excluded_directories: exclude,
             };
             let finder = EmptyFileFinder::new(config, token);
-            let empty_files = finder.find_empty_files()?;
+            let empty_files = finder.find_empty_files(|_| {})?;
 
             println!("\nFound {} empty files:", empty_files.len());
             for f in empty_files {
@@ -465,7 +480,7 @@ fn main() -> Result<()> {
                 excluded_directories: exclude,
             };
             let finder = EmptyFolderFinder::new(config, token);
-            let empty_folders = finder.find_empty_folders()?;
+            let empty_folders = finder.find_empty_folders(|_| {})?;
 
             println!("\nFound {} empty folders:", empty_folders.len());
             for folder in empty_folders {
@@ -479,7 +494,10 @@ fn main() -> Result<()> {
             min_size,
             limit,
         } => {
-            println!("📦 Scanning for files >= {} bytes in: {:?}", min_size, directories);
+            println!(
+                "📦 Scanning for files >= {} bytes in: {:?}",
+                min_size, directories
+            );
             let config = dedupus_core::BigFileFinderConfig {
                 included_directories: directories,
                 excluded_directories: exclude,
@@ -624,9 +642,21 @@ fn main() -> Result<()> {
                 let dup_cache = ScanCache::load_or_create("dup_cache");
                 let img_cache = ScanCache::load_or_create("img_cache");
                 println!("📊 Scan Cache Statistics:");
-                println!("  - Cached duplicate file hashes: {}", dup_cache.file_hashes.len());
-                println!("  - Cached perceptual image hashes: {}", img_cache.image_hashes.len());
-                println!("  - Cache directory: {}", ScanCache::default_cache_path("").parent().unwrap().display());
+                println!(
+                    "  - Cached duplicate file hashes: {}",
+                    dup_cache.file_hashes.len()
+                );
+                println!(
+                    "  - Cached perceptual image hashes: {}",
+                    img_cache.image_hashes.len()
+                );
+                println!(
+                    "  - Cache directory: {}",
+                    ScanCache::default_cache_path("")
+                        .parent()
+                        .unwrap()
+                        .display()
+                );
             }
             CacheAction::Prune => {
                 let mut dup_cache = ScanCache::load_or_create("dup_cache");
@@ -635,7 +665,10 @@ fn main() -> Result<()> {
                 let pruned_img = img_cache.prune_missing();
                 let _ = dup_cache.save();
                 let _ = img_cache.save();
-                println!("🧹 Pruned {} missing file hashes and {} missing image hashes.", pruned_dup, pruned_img);
+                println!(
+                    "🧹 Pruned {} missing file hashes and {} missing image hashes.",
+                    pruned_dup, pruned_img
+                );
             }
             CacheAction::Clear => {
                 let mut dup_cache = ScanCache::load_or_create("dup_cache");

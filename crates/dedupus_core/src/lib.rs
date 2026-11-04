@@ -15,19 +15,17 @@ pub use big_file::{BigFileFinder, BigFileFinderConfig};
 pub use broken_file::{BrokenFile, BrokenFileFinder, BrokenFileFinderConfig};
 pub use cache::ScanCache;
 pub use cleaner::{delete_permanently, move_to_trash, replace_with_hardlinks, CleanReport};
-pub use common::{CancellationToken, HashAlgorithm, ProgressEvent, ScannedFile};
+pub use common::{
+    CancellationToken, HashAlgorithm, ProgressCounter, ProgressEvent, ProgressReporter, ScannedFile,
+};
 pub use duplicate::{DuplicateFinder, DuplicateFinderConfig, DuplicateGroup};
 pub use empty_file::{EmptyFileFinder, EmptyFileFinderConfig};
 pub use empty_folder::{EmptyFolderFinder, EmptyFolderFinderConfig};
-pub use similar_audio::{
-    ScannedAudio, SimilarAudioConfig, SimilarAudioFinder, SimilarAudioGroup,
-};
+pub use similar_audio::{ScannedAudio, SimilarAudioConfig, SimilarAudioFinder, SimilarAudioGroup};
 pub use similar_image::{
     ImageHashAlgorithm, ScannedImage, SimilarImageConfig, SimilarImageFinder, SimilarImageGroup,
 };
-pub use similar_video::{
-    ScannedVideo, SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup,
-};
+pub use similar_video::{ScannedVideo, SimilarVideoConfig, SimilarVideoFinder, SimilarVideoGroup};
 pub use temp_file::{TempFile, TempFileFinder, TempFileFinderConfig};
 
 #[cfg(test)]
@@ -50,7 +48,10 @@ mod tests {
         let content = b"Dedupus duplicate content test 1234567890";
         File::create(&f1).unwrap().write_all(content).unwrap();
         File::create(&f2).unwrap().write_all(content).unwrap();
-        File::create(&f3).unwrap().write_all(b"Different content").unwrap();
+        File::create(&f3)
+            .unwrap()
+            .write_all(b"Different content")
+            .unwrap();
 
         let config = DuplicateFinderConfig {
             included_directories: vec![path.to_path_buf()],
@@ -62,6 +63,78 @@ mod tests {
         let duplicates = finder.find_duplicates(|_| {}).unwrap();
         assert_eq!(duplicates.len(), 1);
         assert_eq!(duplicates[0].files.len(), 2);
+    }
+
+    #[test]
+    fn test_duplicate_scan_cancellation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        let content = vec![7u8; 64 * 1024];
+        for i in 0..4 {
+            File::create(path.join(format!("copy{}.bin", i)))
+                .unwrap()
+                .write_all(&content)
+                .unwrap();
+        }
+
+        let config = DuplicateFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            ..Default::default()
+        };
+        let token = CancellationToken::new();
+        let cancel_token = token.clone();
+        let finder = DuplicateFinder::new(config, token.clone());
+
+        let duplicates = finder
+            .find_duplicates(|event| {
+                if matches!(event, ProgressEvent::HashingStarted { .. }) {
+                    cancel_token.cancel();
+                }
+            })
+            .unwrap();
+
+        assert!(token.is_cancelled());
+        assert!(duplicates.is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_hashing_progress_events() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        let content = vec![3u8; 32 * 1024];
+        for i in 0..3 {
+            File::create(path.join(format!("same{}.bin", i)))
+                .unwrap()
+                .write_all(&content)
+                .unwrap();
+        }
+
+        let config = DuplicateFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            ..Default::default()
+        };
+        let token = CancellationToken::new();
+        let finder = DuplicateFinder::new(config, token);
+
+        let mut progress = Vec::new();
+        let duplicates = finder
+            .find_duplicates(|event| {
+                if let ProgressEvent::HashingProgress { processed, total } = event {
+                    progress.push((processed, total));
+                }
+            })
+            .unwrap();
+
+        assert_eq!(duplicates.len(), 1);
+        assert!(
+            progress
+                .iter()
+                .any(|(processed, total)| processed == total && *total >= 3),
+            "expected a completed hashing progress update, got {:?}",
+            progress
+        );
     }
 
     #[test]
@@ -81,7 +154,7 @@ mod tests {
         };
         let token = CancellationToken::new();
         let finder = EmptyFileFinder::new(config, token);
-        let empty_files = finder.find_empty_files().unwrap();
+        let empty_files = finder.find_empty_files(|_| {}).unwrap();
 
         assert_eq!(empty_files.len(), 1);
         assert_eq!(empty_files[0].path, empty);
@@ -138,8 +211,14 @@ mod tests {
         let f2 = path.join("dup1.txt");
         let f3 = path.join("delete_me.txt");
 
-        File::create(&f1).unwrap().write_all(b"Original content").unwrap();
-        File::create(&f2).unwrap().write_all(b"Original content").unwrap();
+        File::create(&f1)
+            .unwrap()
+            .write_all(b"Original content")
+            .unwrap();
+        File::create(&f2)
+            .unwrap()
+            .write_all(b"Original content")
+            .unwrap();
         File::create(&f3).unwrap().write_all(b"Delete me").unwrap();
 
         // Test permanent deletion
@@ -299,9 +378,7 @@ mod tests {
 
         assert_eq!(found.len(), 4);
         assert!(found.iter().all(|f| !f.path.ends_with("keep.txt")));
-        assert!(found
-            .iter()
-            .any(|f| f.reason == "Office lock file"));
+        assert!(found.iter().any(|f| f.reason == "Office lock file"));
         assert!(found.iter().any(|f| f.reason == "Backup copy"));
         assert!(found.iter().any(|f| f.reason == "Extension .part"));
         assert!(found.iter().any(|f| f.reason == "OS junk file"));
@@ -370,6 +447,9 @@ mod tests {
         // Save and reload
         cache.save().unwrap();
         let reloaded = ScanCache::load_from_path(&cache_file).unwrap();
-        assert_eq!(reloaded.get_file_hash(&dummy_path, 100, 1000), Some("hash123"));
+        assert_eq!(
+            reloaded.get_file_hash(&dummy_path, 100, 1000),
+            Some("hash123")
+        );
     }
 }

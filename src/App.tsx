@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -102,6 +103,37 @@ interface CleanReport {
   successful: string[];
   failed: [string, string][];
   bytes_freed: number;
+}
+
+interface ScanOutcome<T> {
+  results: T;
+  cancelled: boolean;
+}
+
+type ScanEventName =
+  | "stage"
+  | "directory"
+  | "discovered"
+  | "hashing_started"
+  | "hashing";
+
+interface ScanEvent {
+  scanId: number;
+  kind: string;
+  event: ScanEventName;
+  stage?: string;
+  path?: string;
+  count?: number;
+  processed?: number;
+  total?: number;
+}
+
+interface ScanProgress {
+  stage?: string;
+  path?: string;
+  discovered?: number;
+  processed?: number;
+  total?: number;
 }
 
 type Mode =
@@ -211,6 +243,9 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const activeScanId = useRef(0);
 
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [similarImages, setSimilarImages] = useState<SimilarImageGroup[]>([]);
@@ -243,6 +278,49 @@ export default function App() {
       // ignore
     }
   }, [theme]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    (async () => {
+      try {
+        unlisten = await listen<ScanEvent>("scan-progress", (event) => {
+          const payload = event.payload;
+          if (payload.scanId !== activeScanId.current) return;
+
+          setProgress((prev) => {
+            const next: ScanProgress = { ...(prev ?? {}) };
+            switch (payload.event) {
+              case "stage":
+                if (payload.stage) next.stage = payload.stage;
+                break;
+              case "directory":
+                if (payload.path) next.path = payload.path;
+                break;
+              case "discovered":
+                if (payload.count != null) next.discovered = payload.count;
+                break;
+              case "hashing_started":
+                next.processed = 0;
+                next.total = payload.total;
+                break;
+              case "hashing":
+                next.processed = payload.processed;
+                next.total = payload.total;
+                break;
+            }
+            return next;
+          });
+        });
+      } catch {
+        // Browser preview without the Tauri runtime
+      }
+    })();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -311,21 +389,46 @@ export default function App() {
       setStatusMsg("Please specify a directory path to scan.");
       return;
     }
+    if (scanning) return;
 
+    const scanId = Date.now();
+    activeScanId.current = scanId;
     setScanning(true);
+    setCancelling(false);
+    setProgress({ stage: "Preparing scan…" });
     setStatusMsg("Scanning in progress...");
     setSelectedPaths(new Set());
 
+    // Clear the current view so stale results are not mistaken for this scan.
+    if (mode === "duplicates") setDuplicates([]);
+    else if (mode === "similar_images") setSimilarImages([]);
+    else if (mode === "similar_audio") setSimilarAudio([]);
+    else if (mode === "similar_video") setSimilarVideos([]);
+    else if (mode === "big_files") setBigFiles([]);
+    else if (mode === "temp_files") setTempFiles([]);
+    else if (mode === "broken_files") setBrokenFiles([]);
+    else if (mode === "empty_files") setEmptyFiles([]);
+    else if (mode === "empty_folders") setEmptyFolders([]);
+
     try {
       if (mode === "duplicates") {
-        const res = await invoke<DuplicateGroup[]>("scan_duplicates", {
-          directories: [scanPath.trim()],
-          exclude: [],
-          minSize: minSize > 0 ? minSize : null,
-          maxSize: null,
-          algo,
-          useCache,
-        });
+        const outcome = await invoke<ScanOutcome<DuplicateGroup[]>>(
+          "scan_duplicates",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            minSize: minSize > 0 ? minSize : null,
+            maxSize: null,
+            algo,
+            useCache,
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setDuplicates(res);
         const totalWasted = res.reduce(
           (acc, g) => acc + g.file_size * (g.files.length - 1),
@@ -337,47 +440,83 @@ export default function App() {
           )} reclaimable)`
         );
       } else if (mode === "similar_images") {
-        const res = await invoke<SimilarImageGroup[]>("scan_similar_images", {
-          directories: [scanPath.trim()],
-          exclude: [],
-          distance: hammingDistance,
-          algo: imageAlgo,
-          useCache,
-        });
+        const outcome = await invoke<ScanOutcome<SimilarImageGroup[]>>(
+          "scan_similar_images",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            distance: hammingDistance,
+            algo: imageAlgo,
+            useCache,
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setSimilarImages(res);
         const totalImages = res.reduce((acc, g) => acc + g.images.length, 0);
         setStatusMsg(
           `Scan completed: Found ${res.length} similar image groups (${totalImages} total images)`
         );
       } else if (mode === "similar_audio") {
-        const res = await invoke<SimilarAudioGroup[]>("scan_similar_audio", {
-          directories: [scanPath.trim()],
-          exclude: [],
-          maxDurationDiff: durationDiff,
-        });
+        const outcome = await invoke<ScanOutcome<SimilarAudioGroup[]>>(
+          "scan_similar_audio",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            maxDurationDiff: durationDiff,
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setSimilarAudio(res);
         const totalTracks = res.reduce((acc, g) => acc + g.tracks.length, 0);
         setStatusMsg(
           `Scan completed: Found ${res.length} similar audio groups (${totalTracks} total tracks)`
         );
       } else if (mode === "similar_video") {
-        const res = await invoke<SimilarVideoGroup[]>("scan_similar_videos", {
-          directories: [scanPath.trim()],
-          exclude: [],
-          maxDurationDiff: durationDiff,
-        });
+        const outcome = await invoke<ScanOutcome<SimilarVideoGroup[]>>(
+          "scan_similar_videos",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            maxDurationDiff: durationDiff,
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setSimilarVideos(res);
         const totalVideos = res.reduce((acc, g) => acc + g.videos.length, 0);
         setStatusMsg(
           `Scan completed: Found ${res.length} similar video groups (${totalVideos} total videos)`
         );
       } else if (mode === "big_files") {
-        const res = await invoke<ScannedFile[]>("scan_big_files", {
-          directories: [scanPath.trim()],
-          exclude: [],
-          minSize: Math.max(1, Math.round(bigMinMb * 1024 * 1024)),
-          maxResults: Math.max(1, bigLimit),
-        });
+        const outcome = await invoke<ScanOutcome<ScannedFile[]>>(
+          "scan_big_files",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            minSize: Math.max(1, Math.round(bigMinMb * 1024 * 1024)),
+            maxResults: Math.max(1, bigLimit),
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setBigFiles(res);
         const totalBytes = res.reduce((acc, f) => acc + f.size, 0);
         setStatusMsg(
@@ -386,11 +525,20 @@ export default function App() {
           )} total)`
         );
       } else if (mode === "temp_files") {
-        const res = await invoke<TempFileEntry[]>("scan_temp_files", {
-          directories: [scanPath.trim()],
-          exclude: [],
-          minSize: Math.max(0, Math.round(tempMinKb * 1024)),
-        });
+        const outcome = await invoke<ScanOutcome<TempFileEntry[]>>(
+          "scan_temp_files",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            minSize: Math.max(0, Math.round(tempMinKb * 1024)),
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setTempFiles(res);
         const totalBytes = res.reduce((acc, f) => acc + f.size, 0);
         setStatusMsg(
@@ -399,26 +547,51 @@ export default function App() {
           )} total)`
         );
       } else if (mode === "broken_files") {
-        const res = await invoke<BrokenFileEntry[]>("scan_broken_files", {
-          directories: [scanPath.trim()],
-          exclude: [],
-        });
-        setBrokenFiles(res);
-        setStatusMsg(
-          `Scan completed: Found ${res.length} broken files`
+        const outcome = await invoke<ScanOutcome<BrokenFileEntry[]>>(
+          "scan_broken_files",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+          }
         );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
+        setBrokenFiles(res);
+        setStatusMsg(`Scan completed: Found ${res.length} broken files`);
       } else if (mode === "empty_files") {
-        const res = await invoke<ScannedFile[]>("scan_empty_files", {
-          directories: [scanPath.trim()],
-          exclude: [],
-        });
+        const outcome = await invoke<ScanOutcome<ScannedFile[]>>(
+          "scan_empty_files",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setEmptyFiles(res);
         setStatusMsg(`Scan completed: Found ${res.length} empty files`);
       } else if (mode === "empty_folders") {
-        const res = await invoke<string[]>("scan_empty_folders", {
-          directories: [scanPath.trim()],
-          exclude: [],
-        });
+        const outcome = await invoke<ScanOutcome<string[]>>(
+          "scan_empty_folders",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
         setEmptyFolders(res);
         setStatusMsg(`Scan completed: Found ${res.length} empty folders`);
       }
@@ -426,7 +599,23 @@ export default function App() {
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMsg(`Scan failed: ${msg}`);
     } finally {
+      activeScanId.current = 0;
       setScanning(false);
+      setCancelling(false);
+      setProgress(null);
+    }
+  };
+
+  const handleCancelScan = async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    setProgress((prev) => ({ ...(prev ?? {}), stage: "Cancelling…" }));
+    setStatusMsg("Cancelling scan…");
+    try {
+      await invoke("cancel_scan");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Cancel failed: ${msg}`);
     }
   };
 
@@ -722,6 +911,7 @@ export default function App() {
                       setMode(item.mode);
                       setSelectedPaths(new Set());
                     }}
+                    disabled={scanning || cleaning}
                   >
                     <Icon size={16} />
                     <span>{item.label}</span>
@@ -945,10 +1135,59 @@ export default function App() {
         </button>
       </section>
 
-      {/* Indeterminate progress while a scan is running */}
+      {/* Live scan progress with cooperative cancellation */}
       {scanning && (
-        <div className="progress-track">
-          <div className="progress-bar" />
+        <div className="scan-progress">
+          <div className="scan-progress-head">
+            <div className="scan-progress-label">
+              <RotateCw size={13} className="spin" />
+              <span className="scan-progress-stage">
+                {progress?.stage ?? "Scanning…"}
+              </span>
+              {progress?.discovered != null && (
+                <span className="scan-progress-count">
+                  {progress.discovered.toLocaleString()} items found
+                </span>
+              )}
+            </div>
+            <button
+              className="cancel-scan-btn"
+              onClick={handleCancelScan}
+              disabled={cancelling}
+            >
+              <X size={13} />
+              <span>{cancelling ? "Cancelling…" : "Cancel"}</span>
+            </button>
+          </div>
+
+          <div className="progress-track">
+            {progress?.total ? (
+              <div
+                className="progress-bar determinate"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round(((progress.processed ?? 0) / progress.total) * 100)
+                  )}%`,
+                }}
+              />
+            ) : (
+              <div className="progress-bar" />
+            )}
+          </div>
+
+          <div className="scan-progress-meta">
+            {progress?.total != null && (
+              <span>
+                {progress.processed ?? 0} / {progress.total} processed
+              </span>
+            )}
+            {progress?.path && (
+              <span className="scan-progress-path" title={progress.path}>
+                {progress.path}
+              </span>
+            )}
+          </div>
         </div>
       )}
 

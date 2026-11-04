@@ -1,4 +1,6 @@
-use crate::common::{CancellationToken, ProgressEvent};
+use crate::common::{
+    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+};
 use crate::similar_image::compute_dhash;
 use anyhow::Result;
 use rayon::prelude::*;
@@ -64,7 +66,7 @@ impl SimilarVideoFinder {
 
     pub fn find_similar_videos<F>(&self, mut on_progress: F) -> Result<Vec<SimilarVideoGroup>>
     where
-        F: FnMut(ProgressEvent),
+        F: FnMut(ProgressEvent) + Send,
     {
         if self.cancellation_token.is_cancelled() {
             return Ok(Vec::new());
@@ -76,6 +78,7 @@ impl SimilarVideoFinder {
 
         let mut candidate_paths = Vec::new();
         let mut total_discovered = 0;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
@@ -92,6 +95,10 @@ impl SimilarVideoFinder {
                     .iter()
                     .any(|ex| path.starts_with(ex))
             }) {
+                if self.cancellation_token.is_cancelled() {
+                    return Ok(Vec::new());
+                }
+
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -119,7 +126,7 @@ impl SimilarVideoFinder {
                     if metadata.len() >= self.config.min_file_size {
                         candidate_paths.push((path.to_path_buf(), metadata.len()));
                         total_discovered += 1;
-                        if total_discovered % 500 == 0 {
+                        if discovery.should_emit() {
                             on_progress(ProgressEvent::FilesDiscovered {
                                 count: total_discovered,
                             });
@@ -138,11 +145,17 @@ impl SimilarVideoFinder {
         }
 
         // --- STAGE 2: Extract video metadata & perceptual frame hashes ---
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Analyzing video frames".to_string(),
+        });
         on_progress(ProgressEvent::HashingStarted {
             total_files: candidate_paths.len(),
         });
 
         let has_ffmpeg = check_ffmpeg_available();
+
+        let reporter = ProgressReporter::new(on_progress);
+        let hash_counter = ProgressCounter::new(candidate_paths.len());
 
         let scanned_videos: Vec<ScannedVideo> = candidate_paths
             .into_par_iter()
@@ -150,9 +163,14 @@ impl SimilarVideoFinder {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+                if let Some((processed, total)) = hash_counter.tick() {
+                    reporter.report(ProgressEvent::HashingProgress { processed, total });
+                }
                 analyze_video(&path, size, has_ffmpeg).ok()
             })
             .collect();
+
+        let mut on_progress = reporter.into_inner();
 
         if self.cancellation_token.is_cancelled() || scanned_videos.len() < 2 {
             return Ok(Vec::new());

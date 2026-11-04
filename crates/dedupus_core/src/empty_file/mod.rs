@@ -1,4 +1,4 @@
-use crate::common::{CancellationToken, ScannedFile};
+use crate::common::{CancellationToken, DiscoveryThrottle, ProgressEvent, ScannedFile};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -23,13 +23,24 @@ impl EmptyFileFinder {
         }
     }
 
-    pub fn find_empty_files(&self) -> Result<Vec<ScannedFile>> {
+    pub fn find_empty_files<F>(&self, mut on_progress: F) -> Result<Vec<ScannedFile>>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Discovering empty files".to_string(),
+        });
+
         let mut empty_files = Vec::new();
+        let mut total_scanned = 0usize;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
                 break;
             }
+
+            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
 
             for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
                 let path = e.path();
@@ -39,6 +50,10 @@ impl EmptyFileFinder {
                     .iter()
                     .any(|ex| path.starts_with(ex))
             }) {
+                if self.cancellation_token.is_cancelled() {
+                    break;
+                }
+
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -46,6 +61,13 @@ impl EmptyFileFinder {
 
                 if !entry.file_type().is_file() {
                     continue;
+                }
+
+                total_scanned += 1;
+                if discovery.should_emit() {
+                    on_progress(ProgressEvent::FilesDiscovered {
+                        count: total_scanned,
+                    });
                 }
 
                 if let Ok(metadata) = entry.metadata() {
@@ -65,6 +87,13 @@ impl EmptyFileFinder {
                 }
             }
         }
+
+        on_progress(ProgressEvent::FilesDiscovered {
+            count: total_scanned,
+        });
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Empty file search finished".to_string(),
+        });
 
         Ok(empty_files)
     }

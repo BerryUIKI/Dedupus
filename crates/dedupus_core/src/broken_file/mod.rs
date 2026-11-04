@@ -1,4 +1,6 @@
-use crate::common::{CancellationToken, ProgressEvent};
+use crate::common::{
+    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+};
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -61,11 +63,15 @@ impl BrokenFileFinder {
     /// (image decoding, archive magic bytes, audio container probing).
     pub fn find_broken_files<F>(&self, mut on_progress: F) -> Result<Vec<BrokenFile>>
     where
-        F: FnMut(ProgressEvent),
+        F: FnMut(ProgressEvent) + Send,
     {
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Discovering files".to_string(),
+        });
         let mut broken: Vec<BrokenFile> = Vec::new();
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut total_scanned = 0usize;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
@@ -109,7 +115,7 @@ impl BrokenFileFinder {
                 }
 
                 total_scanned += 1;
-                if total_scanned.is_multiple_of(500) {
+                if discovery.should_emit() {
                     on_progress(ProgressEvent::FilesDiscovered {
                         count: total_scanned,
                     });
@@ -129,11 +135,24 @@ impl BrokenFileFinder {
             return Ok(broken);
         }
 
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Validating files".to_string(),
+        });
+        on_progress(ProgressEvent::HashingStarted {
+            total_files: candidates.len(),
+        });
+
+        let reporter = ProgressReporter::new(on_progress);
+        let check_counter = ProgressCounter::new(candidates.len());
+
         let checked: Vec<BrokenFile> = candidates
             .into_par_iter()
             .filter_map(|path| {
                 if self.cancellation_token.is_cancelled() {
                     return None;
+                }
+                if let Some((processed, total)) = check_counter.tick() {
+                    reporter.report(ProgressEvent::HashingProgress { processed, total });
                 }
 
                 let metadata = fs::metadata(&path).ok()?;
@@ -155,6 +174,8 @@ impl BrokenFileFinder {
             })
             .collect();
 
+        let mut on_progress = reporter.into_inner();
+
         broken.extend(checked);
         broken.sort_by_key(|b| std::cmp::Reverse(b.size));
 
@@ -173,8 +194,7 @@ fn is_checkable(path: &Path, config: &BrokenFileFinderConfig) -> bool {
     };
 
     (config.check_images && IMAGE_EXTENSIONS.contains(&ext.as_str()))
-        || (config.check_archives
-            && (ARCHIVE_EXTENSIONS.contains(&ext.as_str()) || ext == "pdf"))
+        || (config.check_archives && (ARCHIVE_EXTENSIONS.contains(&ext.as_str()) || ext == "pdf"))
         || (config.check_audio && AUDIO_EXTENSIONS.contains(&ext.as_str()))
 }
 

@@ -1,4 +1,6 @@
-use crate::common::{CancellationToken, ProgressEvent};
+use crate::common::{
+    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+};
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -68,7 +70,7 @@ impl SimilarAudioFinder {
 
     pub fn find_similar_audio<F>(&self, mut on_progress: F) -> Result<Vec<SimilarAudioGroup>>
     where
-        F: FnMut(ProgressEvent),
+        F: FnMut(ProgressEvent) + Send,
     {
         if self.cancellation_token.is_cancelled() {
             return Ok(Vec::new());
@@ -80,6 +82,7 @@ impl SimilarAudioFinder {
 
         let mut candidate_paths = Vec::new();
         let mut total_discovered = 0;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
@@ -96,6 +99,10 @@ impl SimilarAudioFinder {
                     .iter()
                     .any(|ex| path.starts_with(ex))
             }) {
+                if self.cancellation_token.is_cancelled() {
+                    return Ok(Vec::new());
+                }
+
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -123,7 +130,7 @@ impl SimilarAudioFinder {
                     if metadata.len() >= self.config.min_file_size {
                         candidate_paths.push((path.to_path_buf(), metadata.len()));
                         total_discovered += 1;
-                        if total_discovered % 500 == 0 {
+                        if discovery.should_emit() {
                             on_progress(ProgressEvent::FilesDiscovered {
                                 count: total_discovered,
                             });
@@ -142,9 +149,15 @@ impl SimilarAudioFinder {
         }
 
         // --- STAGE 2: Compute acoustic fingerprints in parallel ---
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Fingerprinting audio".to_string(),
+        });
         on_progress(ProgressEvent::HashingStarted {
             total_files: candidate_paths.len(),
         });
+
+        let reporter = ProgressReporter::new(on_progress);
+        let hash_counter = ProgressCounter::new(candidate_paths.len());
 
         let scanned_tracks: Vec<ScannedAudio> = candidate_paths
             .into_par_iter()
@@ -152,9 +165,15 @@ impl SimilarAudioFinder {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+                if let Some((processed, total)) = hash_counter.tick() {
+                    reporter.report(ProgressEvent::HashingProgress { processed, total });
+                }
                 analyze_audio(&path, size).ok()
             })
             .collect();
+
+        let mut on_progress = reporter.into_inner();
+
         if self.cancellation_token.is_cancelled() || scanned_tracks.len() < 2 {
             return Ok(Vec::new());
         }
@@ -269,10 +288,7 @@ fn analyze_audio(path: &Path, size: u64) -> Result<ScannedAudio> {
     };
 
     let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-    let channels = codec_params
-        .channels
-        .map(|c| c.count() as u32)
-        .unwrap_or(2);
+    let channels = codec_params.channels.map(|c| c.count() as u32).unwrap_or(2);
 
     // Calculate duration in seconds
     let duration_secs = if let Some(n_frames) = codec_params.n_frames {
@@ -283,8 +299,7 @@ fn analyze_audio(path: &Path, size: u64) -> Result<ScannedAudio> {
     };
 
     let decoder_opts = DecoderOptions::default();
-    let mut decoder =
-        symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
+    let mut decoder = symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
 
     // Read up to the first 10 seconds of audio and bucket the per-sample energy
     // into 128 fixed time bins. Bucketing by absolute sample index keeps the

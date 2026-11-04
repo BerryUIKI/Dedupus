@@ -1,4 +1,4 @@
-use crate::common::{CancellationToken, ProgressEvent};
+use crate::common::{CancellationToken, DiscoveryThrottle, ProgressEvent};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -6,8 +6,23 @@ use walkdir::WalkDir;
 
 /// Extensions commonly used for temporary, backup and partial-download files.
 pub const DEFAULT_TEMP_EXTENSIONS: &[&str] = &[
-    "tmp", "temp", "bak", "old", "orig", "backup", "swp", "swo", "swn", "part", "partial",
-    "download", "crdownload", "cpart", "cache", "rubbish", "trash",
+    "tmp",
+    "temp",
+    "bak",
+    "old",
+    "orig",
+    "backup",
+    "swp",
+    "swo",
+    "swn",
+    "part",
+    "partial",
+    "download",
+    "crdownload",
+    "cpart",
+    "cache",
+    "rubbish",
+    "trash",
 ];
 
 /// Well-known OS junk file names (compared case-insensitively).
@@ -51,6 +66,11 @@ impl TempFileFinder {
     {
         let mut found: Vec<TempFile> = Vec::new();
         let mut total_scanned = 0usize;
+        let mut discovery = DiscoveryThrottle::new();
+
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Searching temporary files".to_string(),
+        });
 
         let mut extensions: Vec<String> = DEFAULT_TEMP_EXTENSIONS
             .iter()
@@ -88,7 +108,7 @@ impl TempFileFinder {
 
                 let path = entry.path();
                 total_scanned += 1;
-                if total_scanned.is_multiple_of(500) {
+                if discovery.should_emit() {
                     on_progress(ProgressEvent::FilesDiscovered {
                         count: total_scanned,
                     });

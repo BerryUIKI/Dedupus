@@ -1,4 +1,7 @@
-use crate::common::{CancellationToken, HashAlgorithm, ProgressEvent, ScannedFile};
+use crate::common::{
+    CancellationToken, DiscoveryThrottle, HashAlgorithm, ProgressCounter, ProgressEvent,
+    ProgressReporter, ScannedFile,
+};
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -56,7 +59,7 @@ impl DuplicateFinder {
     /// Execute the full multi-stage duplicate search pipeline.
     pub fn find_duplicates<F>(&self, mut on_progress: F) -> Result<Vec<DuplicateGroup>>
     where
-        F: FnMut(ProgressEvent),
+        F: FnMut(ProgressEvent) + Send,
     {
         if self.cancellation_token.is_cancelled() {
             return Ok(Vec::new());
@@ -69,6 +72,7 @@ impl DuplicateFinder {
 
         let mut files_by_size: HashMap<u64, Vec<ScannedFile>> = HashMap::new();
         let mut total_discovered = 0;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
@@ -85,6 +89,10 @@ impl DuplicateFinder {
                     .iter()
                     .any(|ex| path.starts_with(ex))
             }) {
+                if self.cancellation_token.is_cancelled() {
+                    return Ok(Vec::new());
+                }
+
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -115,17 +123,14 @@ impl DuplicateFinder {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs());
 
-                files_by_size
-                    .entry(size)
-                    .or_default()
-                    .push(ScannedFile {
-                        path: entry.path().to_path_buf(),
-                        size,
-                        modified_secs,
-                    });
+                files_by_size.entry(size).or_default().push(ScannedFile {
+                    path: entry.path().to_path_buf(),
+                    size,
+                    modified_secs,
+                });
 
                 total_discovered += 1;
-                if total_discovered % 1000 == 0 {
+                if discovery.should_emit() {
                     on_progress(ProgressEvent::FilesDiscovered {
                         count: total_discovered,
                     });
@@ -151,6 +156,13 @@ impl DuplicateFinder {
 
         let candidate_files: Vec<ScannedFile> = files_by_size.into_values().flatten().collect();
 
+        on_progress(ProgressEvent::HashingStarted {
+            total_files: candidate_files.len(),
+        });
+
+        let reporter = ProgressReporter::new(on_progress);
+        let prefix_counter = ProgressCounter::new(candidate_files.len());
+
         // Compute prefix hash in parallel
         let prefix_hashed: Vec<(u64, [u8; 16], ScannedFile)> = candidate_files
             .into_par_iter()
@@ -158,10 +170,15 @@ impl DuplicateFinder {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+                if let Some((processed, total)) = prefix_counter.tick() {
+                    reporter.report(ProgressEvent::HashingProgress { processed, total });
+                }
                 let prefix = compute_prefix_hash(&file.path).ok()?;
                 Some((file.size, prefix, file))
             })
             .collect();
+
+        let mut on_progress = reporter.into_inner();
 
         // Group by (size, prefix_hash)
         let mut by_prefix: HashMap<(u64, [u8; 16]), Vec<ScannedFile>> = HashMap::new();
@@ -178,9 +195,15 @@ impl DuplicateFinder {
         let full_hash_candidates: Vec<ScannedFile> = by_prefix.into_values().flatten().collect();
         let total_to_hash = full_hash_candidates.len();
 
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Hashing matching files".to_string(),
+        });
         on_progress(ProgressEvent::HashingStarted {
             total_files: total_to_hash,
         });
+
+        let reporter = ProgressReporter::new(on_progress);
+        let hash_counter = ProgressCounter::new(total_to_hash);
 
         let cache = if self.config.use_cache {
             Some(crate::cache::ScanCache::load_or_create("dup_cache"))
@@ -195,14 +218,15 @@ impl DuplicateFinder {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+                if let Some((processed, total)) = hash_counter.tick() {
+                    reporter.report(ProgressEvent::HashingProgress { processed, total });
+                }
 
                 // Check cache if enabled
                 if let Some(c) = &cache {
-                    if let Some(h) = c.get_file_hash(
-                        &file.path,
-                        file.size,
-                        file.modified_secs.unwrap_or(0),
-                    ) {
+                    if let Some(h) =
+                        c.get_file_hash(&file.path, file.size, file.modified_secs.unwrap_or(0))
+                    {
                         return Some((file.size, h.to_string(), file));
                     }
                 }
@@ -211,6 +235,8 @@ impl DuplicateFinder {
                 Some((file.size, hash, file))
             })
             .collect();
+
+        let mut on_progress = reporter.into_inner();
 
         // Update and save cache with newly computed hashes
         if let Some(mut c) = cache {
@@ -228,10 +254,7 @@ impl DuplicateFinder {
         // Group by (size, full_hash)
         let mut duplicates_map: HashMap<(u64, String), Vec<ScannedFile>> = HashMap::new();
         for (size, hash, file) in full_hashes {
-            duplicates_map
-                .entry((size, hash))
-                .or_default()
-                .push(file);
+            duplicates_map.entry((size, hash)).or_default().push(file);
         }
         duplicates_map.retain(|_, files| files.len() >= 2);
 

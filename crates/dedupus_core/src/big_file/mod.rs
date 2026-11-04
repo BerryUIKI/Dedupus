@@ -1,4 +1,4 @@
-use crate::common::{CancellationToken, ProgressEvent, ScannedFile};
+use crate::common::{CancellationToken, DiscoveryThrottle, ProgressEvent, ScannedFile};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -44,6 +44,11 @@ impl BigFileFinder {
     {
         let mut found: Vec<ScannedFile> = Vec::new();
         let mut total_scanned = 0usize;
+        let mut discovery = DiscoveryThrottle::new();
+
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Finding big files".to_string(),
+        });
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
@@ -81,7 +86,7 @@ impl BigFileFinder {
                 let size = metadata.len();
                 total_scanned += 1;
 
-                if total_scanned.is_multiple_of(500) {
+                if discovery.should_emit() {
                     on_progress(ProgressEvent::FilesDiscovered {
                         count: total_scanned,
                     });

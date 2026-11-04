@@ -37,6 +37,7 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
   - [x] Big files analyzer.
 - [x] **Safe Cleaning Actions**: Move to Recycle Bin / Trash, hardlinking, or permanent deletion.
 - [x] **Scan Cache**: Persist file hashes across scans to dramatically speed up subsequent runs.
+- [x] **Live Scan Feedback**: Real-time stage, running file count and hashing progress, with instant cancellation.
 
 ---
 

@@ -1,4 +1,6 @@
-use crate::common::{CancellationToken, ProgressEvent};
+use crate::common::{
+    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+};
 use anyhow::Result;
 use image::imageops::FilterType;
 use image::{GenericImageView, ImageReader};
@@ -15,7 +17,7 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gi
 pub enum ImageHashAlgorithm {
     #[default]
     Gradient, // dHash (Difference/Gradient Hash)
-    Average,  // aHash (Average Hash)
+    Average, // aHash (Average Hash)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +74,7 @@ impl SimilarImageFinder {
     /// Discovers image files, computes perceptual hashes in parallel, and clusters similar images.
     pub fn find_similar_images<F>(&self, mut on_progress: F) -> Result<Vec<SimilarImageGroup>>
     where
-        F: FnMut(ProgressEvent),
+        F: FnMut(ProgressEvent) + Send,
     {
         if self.cancellation_token.is_cancelled() {
             return Ok(Vec::new());
@@ -84,6 +86,7 @@ impl SimilarImageFinder {
 
         let mut candidate_paths = Vec::new();
         let mut total_discovered = 0;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
@@ -100,6 +103,10 @@ impl SimilarImageFinder {
                     .iter()
                     .any(|ex| path.starts_with(ex))
             }) {
+                if self.cancellation_token.is_cancelled() {
+                    return Ok(Vec::new());
+                }
+
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -134,7 +141,7 @@ impl SimilarImageFinder {
 
                         candidate_paths.push((path.to_path_buf(), metadata.len(), modified_secs));
                         total_discovered += 1;
-                        if total_discovered % 500 == 0 {
+                        if discovery.should_emit() {
                             on_progress(ProgressEvent::FilesDiscovered {
                                 count: total_discovered,
                             });
@@ -153,6 +160,9 @@ impl SimilarImageFinder {
         }
 
         // --- STAGE 2: Compute perceptual hashes in parallel ---
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Hashing images".to_string(),
+        });
         on_progress(ProgressEvent::HashingStarted {
             total_files: candidate_paths.len(),
         });
@@ -163,6 +173,9 @@ impl SimilarImageFinder {
             None
         };
 
+        let reporter = ProgressReporter::new(on_progress);
+        let hash_counter = ProgressCounter::new(candidate_paths.len());
+
         let algo = self.config.hash_algorithm;
         let hashed_images: Vec<ScannedImage> = candidate_paths
             .into_par_iter()
@@ -170,9 +183,14 @@ impl SimilarImageFinder {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
+                if let Some((processed, total)) = hash_counter.tick() {
+                    reporter.report(ProgressEvent::HashingProgress { processed, total });
+                }
 
                 if let Some(c) = &cache {
-                    if let Some((width, height, hash)) = c.get_image_hash(&path, size, modified_secs) {
+                    if let Some((width, height, hash)) =
+                        c.get_image_hash(&path, size, modified_secs)
+                    {
                         return Some(ScannedImage {
                             path,
                             size,
@@ -195,6 +213,8 @@ impl SimilarImageFinder {
                 }
             })
             .collect();
+
+        let mut on_progress = reporter.into_inner();
 
         // Update and save cache with newly computed image hashes
         if let Some(mut c) = cache {

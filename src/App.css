@@ -228,6 +228,20 @@ body {
   color: var(--text-main);
 }
 
+.nav-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nav-item:disabled:hover {
+  background-color: transparent;
+  color: var(--text-muted);
+}
+
+.nav-item.active:disabled {
+  opacity: 0.75;
+}
+
 .nav-item:active {
   transform: scale(0.985);
 }
@@ -534,8 +548,99 @@ body {
 }
 
 /* ---------- Progress ---------- */
+.scan-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 26px 12px;
+  background-color: rgba(13, 20, 36, 0.55);
+  border-bottom: 1px solid var(--border);
+}
+
+.scan-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scan-progress-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.scan-progress-stage {
+  color: var(--text-main);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scan-progress-count {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background-color: rgba(148, 163, 184, 0.08);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cancel-scan-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 999px;
+  background-color: rgba(248, 113, 113, 0.1);
+  color: #fca5a5;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.cancel-scan-btn:hover:not(:disabled) {
+  background-color: rgba(248, 113, 113, 0.2);
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fecaca;
+}
+
+.cancel-scan-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.scan-progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 14px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-progress-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  opacity: 0.85;
+}
+
 .progress-track {
-  height: 3px;
+  height: 4px;
+  border-radius: 999px;
   background-color: rgba(8, 13, 25, 0.9);
   overflow: hidden;
 }
@@ -546,6 +651,11 @@ body {
   border-radius: 2px;
   background: linear-gradient(90deg, #6366f1, #22d3ee);
   animation: indeterminate 1.15s ease-in-out infinite;
+}
+
+.progress-bar.determinate {
+  animation: none;
+  transition: width 0.25s ease;
 }
 
 @keyframes indeterminate {
@@ -1212,6 +1322,31 @@ html[data-theme="light"] .browse-btn:hover:not(:disabled) {
 html[data-theme="light"] .ffmpeg-hint {
   background-color: rgba(15, 23, 42, 0.03);
   color: #64748b;
+}
+
+html[data-theme="light"] .scan-progress {
+  background-color: rgba(255, 255, 255, 0.55);
+}
+
+html[data-theme="light"] .scan-progress-stage {
+  color: #0f172a;
+}
+
+html[data-theme="light"] .scan-progress-count {
+  background-color: rgba(15, 23, 42, 0.05);
+  color: #64748b;
+}
+
+html[data-theme="light"] .cancel-scan-btn {
+  border-color: rgba(220, 38, 38, 0.28);
+  background-color: rgba(220, 38, 38, 0.07);
+  color: #b91c1c;
+}
+
+html[data-theme="light"] .cancel-scan-btn:hover:not(:disabled) {
+  background-color: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #991b1b;
 }
 
 html[data-theme="light"] .progress-track {

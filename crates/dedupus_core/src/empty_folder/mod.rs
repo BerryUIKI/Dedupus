@@ -1,4 +1,4 @@
-use crate::common::CancellationToken;
+use crate::common::{CancellationToken, DiscoveryThrottle, ProgressEvent};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -25,13 +25,24 @@ impl EmptyFolderFinder {
     }
 
     /// Finds empty directories (bottom-up scan).
-    pub fn find_empty_folders(&self) -> Result<Vec<PathBuf>> {
+    pub fn find_empty_folders<F>(&self, mut on_progress: F) -> Result<Vec<PathBuf>>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Discovering empty folders".to_string(),
+        });
+
         let mut empty_folders = Vec::new();
+        let mut total_scanned = 0usize;
+        let mut discovery = DiscoveryThrottle::new();
 
         for dir in &self.config.included_directories {
             if self.cancellation_token.is_cancelled() {
                 break;
             }
+
+            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
 
             // contents_first(true) yields children before parent (bottom-up)
             for entry in WalkDir::new(dir)
@@ -46,6 +57,10 @@ impl EmptyFolderFinder {
                         .any(|ex| path.starts_with(ex))
                 })
             {
+                if self.cancellation_token.is_cancelled() {
+                    break;
+                }
+
                 let entry = match entry {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -53,6 +68,13 @@ impl EmptyFolderFinder {
 
                 if !entry.file_type().is_dir() {
                     continue;
+                }
+
+                total_scanned += 1;
+                if discovery.should_emit() {
+                    on_progress(ProgressEvent::FilesDiscovered {
+                        count: total_scanned,
+                    });
                 }
 
                 let path = entry.path();
@@ -66,6 +88,13 @@ impl EmptyFolderFinder {
                 }
             }
         }
+
+        on_progress(ProgressEvent::FilesDiscovered {
+            count: total_scanned,
+        });
+        on_progress(ProgressEvent::StageCompleted {
+            stage_name: "Empty folder search finished".to_string(),
+        });
 
         Ok(empty_folders)
     }
