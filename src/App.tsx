@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { LucideIcon } from "lucide-react";
@@ -22,6 +22,10 @@ import {
   ArrowDownWideNarrow,
   Eraser,
   AlertTriangle,
+  Minus,
+  Maximize2,
+  Minimize2,
+  X,
 } from "lucide-react";
 import "./App.css";
 
@@ -218,6 +222,53 @@ export default function App() {
 
   // Set of selected file paths for actions
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const appWindow = getCurrentWindow();
+        const maximized = await appWindow.isMaximized();
+        if (active) setIsMaximized(maximized);
+
+        unlisten = await appWindow.onResized(async () => {
+          try {
+            const state = await appWindow.isMaximized();
+            if (active) setIsMaximized(state);
+          } catch {
+            // ignore
+          }
+        });
+      } catch {
+        // Browser preview without the Tauri runtime
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const windowAction = async (action: "minimize" | "maximize" | "close") => {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const appWindow = getCurrentWindow();
+      if (action === "minimize") {
+        await appWindow.minimize();
+      } else if (action === "maximize") {
+        await appWindow.toggleMaximize();
+      } else {
+        await appWindow.close();
+      }
+    } catch {
+      // Browser preview: window controls are inert
+    }
+  };
 
   const handleBrowse = async () => {
     try {
@@ -587,7 +638,42 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className="app-frame">
+      {/* Custom window title bar */}
+      <div className="window-bar" data-tauri-drag-region>
+        <div className="window-bar-title" data-tauri-drag-region>
+          <FolderSearch size={14} />
+          <span>Dedupus</span>
+        </div>
+        <div className="window-controls">
+          <button
+            className="window-btn"
+            onClick={() => windowAction("minimize")}
+            title="Minimize"
+            aria-label="Minimize"
+          >
+            <Minus size={15} />
+          </button>
+          <button
+            className="window-btn"
+            onClick={() => windowAction("maximize")}
+            title={isMaximized ? "Restore" : "Maximize"}
+            aria-label={isMaximized ? "Restore" : "Maximize"}
+          >
+            {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={13} />}
+          </button>
+          <button
+            className="window-btn close"
+            onClick={() => windowAction("close")}
+            title="Close"
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      </div>
+
+      <div className="app-shell">
       {/* Sidebar navigation */}
       <aside className="sidebar">
         <div className="brand">
@@ -664,26 +750,25 @@ export default function App() {
 
       {/* Control Bar */}
       <section className="control-bar">
-        <div className="input-group flex-1">
+        <div className="input-group flex-1 path-group">
           <FolderOpen size={18} className="input-icon" />
           <input
             type="text"
-            placeholder="Enter directory path (e.g. C:\Downloads or F:\Projects)..."
+            placeholder="Enter a folder path, or browse…"
             value={scanPath}
             onChange={(e) => setScanPath(e.target.value)}
             disabled={scanning || cleaning}
           />
+          <button
+            className="browse-btn"
+            onClick={handleBrowse}
+            disabled={scanning || cleaning}
+            title="Choose a folder to scan"
+          >
+            <FolderOpen size={15} />
+            <span>Browse</span>
+          </button>
         </div>
-
-        <button
-          className="browse-btn"
-          onClick={handleBrowse}
-          disabled={scanning || cleaning}
-          title="Choose a folder to scan"
-        >
-          <FolderOpen size={16} />
-          <span>Browse</span>
-        </button>
 
         {mode === "duplicates" && (
           <>
@@ -1427,6 +1512,7 @@ export default function App() {
           </div>
         </footer>
       )}
+      </div>
       </div>
     </div>
   );
