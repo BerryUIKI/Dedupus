@@ -73,6 +73,9 @@ cargo run -p dedupus_cli -- temp-files <directory_path> [--min-size 0] [--extra-
 # Broken files (images fully decoded, archive/PDF magic bytes, audio container probe, broken symlinks)
 cargo run -p dedupus_cli -- broken-files <directory_path> [--no-images] [--no-archives] [--no-audio]
 
+# Files whose extension does not match their content (magic-byte detection)
+cargo run -p dedupus_cli -- bad-extensions <directory_path> [--min-size 1]
+
 # Move files to system Recycle Bin / Trash
 cargo run -p dedupus_cli -- trash <file_paths...>
 

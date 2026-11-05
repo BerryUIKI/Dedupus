@@ -1,3 +1,4 @@
+pub mod bad_extension;
 pub mod big_file;
 pub mod broken_file;
 pub mod cache;
@@ -11,6 +12,7 @@ pub mod similar_image;
 pub mod similar_video;
 pub mod temp_file;
 
+pub use bad_extension::{BadExtensionFile, BadExtensionFinder, BadExtensionFinderConfig};
 pub use big_file::{BigFileFinder, BigFileFinderConfig};
 pub use broken_file::{BrokenFile, BrokenFileFinder, BrokenFileFinderConfig};
 pub use cache::ScanCache;
@@ -427,6 +429,47 @@ mod tests {
         assert!(!broken.iter().any(|b| b.path.ends_with("valid.png")));
         assert!(!broken.iter().any(|b| b.path.ends_with("good.zip")));
         assert!(!broken.iter().any(|b| b.path.ends_with("notes.txt")));
+    }
+
+    #[test]
+    fn test_bad_extension_finder() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        let img = image::RgbImage::from_fn(16, 16, |x, y| {
+            image::Rgb([(x * 16) as u8, (y * 16) as u8, 128])
+        });
+
+        // PNG bytes stored behind a .jpg name: should be reported.
+        img.save_with_format(path.join("photo.jpg"), image::ImageFormat::Png)
+            .unwrap();
+        // Properly named PNG.
+        img.save_with_format(path.join("proper.png"), image::ImageFormat::Png)
+            .unwrap();
+        // JPEG bytes with the .jpeg alias: same family, not reported.
+        img.save_with_format(path.join("proper.jpeg"), image::ImageFormat::Jpeg)
+            .unwrap();
+        // Plain text has no detectable signature.
+        File::create(path.join("notes.txt"))
+            .unwrap()
+            .write_all(b"hello")
+            .unwrap();
+        // Generic names such as .dat are intentionally ignored.
+        std::fs::copy(path.join("proper.png"), path.join("backup.dat")).unwrap();
+
+        let config = BadExtensionFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            excluded_directories: vec![],
+            min_file_size: 1,
+        };
+        let token = CancellationToken::new();
+        let finder = BadExtensionFinder::new(config, token);
+        let found = finder.find_bad_extensions(|_| {}).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, path.join("photo.jpg"));
+        assert_eq!(found[0].extension, "jpg");
+        assert_eq!(found[0].detected_extension, "png");
     }
 
     #[test]

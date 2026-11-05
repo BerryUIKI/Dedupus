@@ -6,6 +6,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   FolderSearch,
   Files,
+  FileWarning,
   Images,
   Music,
   Video,
@@ -50,6 +51,15 @@ interface BrokenFileEntry {
   size: number;
   modified_secs: number | null;
   reason: string;
+}
+
+interface BadExtensionEntry {
+  path: string;
+  size: number;
+  modified_secs: number | null;
+  extension: string;
+  detected_extension: string;
+  detected_mime: string;
 }
 
 interface DuplicateGroup {
@@ -144,6 +154,7 @@ type Mode =
   | "big_files"
   | "temp_files"
   | "broken_files"
+  | "bad_extensions"
   | "empty_files"
   | "empty_folders";
 
@@ -190,6 +201,11 @@ const MODE_INFO: Record<Mode, { title: string; subtitle: string }> = {
     subtitle:
       "Images, archives, PDFs and audio validated for corruption; broken symlinks included.",
   },
+  bad_extensions: {
+    title: "Bad Extensions",
+    subtitle:
+      "Files whose leading bytes reveal a different format than their extension claims.",
+  },
   empty_files: {
     title: "Empty Files",
     subtitle: "Zero-byte files that are usually safe to remove.",
@@ -222,6 +238,7 @@ const NAV_GROUPS: {
     items: [
       { mode: "temp_files", label: "Temp Files", icon: Eraser },
       { mode: "broken_files", label: "Broken Files", icon: AlertTriangle },
+      { mode: "bad_extensions", label: "Bad Extensions", icon: FileWarning },
       { mode: "empty_files", label: "Empty Files", icon: Trash2 },
       { mode: "empty_folders", label: "Empty Folders", icon: FolderMinus },
     ],
@@ -254,6 +271,7 @@ export default function App() {
   const [bigFiles, setBigFiles] = useState<ScannedFile[]>([]);
   const [tempFiles, setTempFiles] = useState<TempFileEntry[]>([]);
   const [brokenFiles, setBrokenFiles] = useState<BrokenFileEntry[]>([]);
+  const [badExtensions, setBadExtensions] = useState<BadExtensionEntry[]>([]);
   const [emptyFiles, setEmptyFiles] = useState<ScannedFile[]>([]);
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
 
@@ -407,6 +425,7 @@ export default function App() {
     else if (mode === "big_files") setBigFiles([]);
     else if (mode === "temp_files") setTempFiles([]);
     else if (mode === "broken_files") setBrokenFiles([]);
+    else if (mode === "bad_extensions") setBadExtensions([]);
     else if (mode === "empty_files") setEmptyFiles([]);
     else if (mode === "empty_folders") setEmptyFolders([]);
 
@@ -562,6 +581,25 @@ export default function App() {
         const res = outcome.results;
         setBrokenFiles(res);
         setStatusMsg(`Scan completed: Found ${res.length} broken files`);
+      } else if (mode === "bad_extensions") {
+        const outcome = await invoke<ScanOutcome<BadExtensionEntry[]>>(
+          "scan_bad_extensions",
+          {
+            scanId,
+            directories: [scanPath.trim()],
+            exclude: [],
+            minSize: 1,
+          }
+        );
+        if (outcome.cancelled) {
+          setStatusMsg("Scan cancelled.");
+          return;
+        }
+        const res = outcome.results;
+        setBadExtensions(res);
+        setStatusMsg(
+          `Scan completed: Found ${res.length} files with mismatched extensions`
+        );
       } else if (mode === "empty_files") {
         const outcome = await invoke<ScanOutcome<ScannedFile[]>>(
           "scan_empty_files",
@@ -671,6 +709,10 @@ export default function App() {
       for (const file of brokenFiles) {
         next.add(file.path);
       }
+    } else if (mode === "bad_extensions") {
+      for (const file of badExtensions) {
+        next.add(file.path);
+      }
     } else if (mode === "empty_files") {
       for (const file of emptyFiles) {
         next.add(file.path);
@@ -740,6 +782,12 @@ export default function App() {
           bytes += file.size;
         }
       }
+    } else if (mode === "bad_extensions") {
+      for (const file of badExtensions) {
+        if (selectedPaths.has(file.path)) {
+          bytes += file.size;
+        }
+      }
     }
     return bytes;
   }, [
@@ -751,6 +799,7 @@ export default function App() {
     bigFiles,
     tempFiles,
     brokenFiles,
+    badExtensions,
     mode,
   ]);
 
@@ -814,6 +863,8 @@ export default function App() {
         setTempFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
       } else if (mode === "broken_files") {
         setBrokenFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
+      } else if (mode === "bad_extensions") {
+        setBadExtensions((prev) => prev.filter((f) => !succSet.has(f.path)));
       }
 
       setSelectedPaths(new Set());
@@ -1199,6 +1250,7 @@ export default function App() {
         (mode === "big_files" && bigFiles.length > 0) ||
         (mode === "temp_files" && tempFiles.length > 0) ||
         (mode === "broken_files" && brokenFiles.length > 0) ||
+        (mode === "bad_extensions" && badExtensions.length > 0) ||
         (mode === "empty_files" && emptyFiles.length > 0) ||
         (mode === "empty_folders" && emptyFolders.length > 0)) && (
         <div className="selection-toolbar">
@@ -1212,7 +1264,8 @@ export default function App() {
               <span>
                 {mode === "big_files" ||
                 mode === "temp_files" ||
-                mode === "broken_files"
+                mode === "broken_files" ||
+                mode === "bad_extensions"
                   ? "Select All Files"
                   : "Select All Duplicates (Keep 1st)"}
               </span>
@@ -1658,6 +1711,63 @@ export default function App() {
                         />
                         <span className="broken-reason-badge">
                           {file.reason}
+                        </span>
+                        <span className="file-path">{file.path}</span>
+                      </label>
+                      <div className="image-meta">
+                        <span className="size-badge">
+                          {formatBytes(file.size)}
+                        </span>
+                        <button
+                          className="icon-action-btn"
+                          title="Copy path"
+                          onClick={() =>
+                            navigator.clipboard.writeText(file.path)
+                          }
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {mode === "bad_extensions" && (
+          <div className="list-view">
+            {badExtensions.length === 0 ? (
+              <div className="empty-state">
+                <FileWarning size={48} opacity={0.3} />
+                <p>No mismatched extensions found, or scan not started.</p>
+              </div>
+            ) : (
+              <ul className="simple-list">
+                {badExtensions.map((file, idx) => {
+                  const isSelected = selectedPaths.has(file.path);
+                  return (
+                    <li
+                      key={idx}
+                      className={`file-item ${
+                        isSelected ? "selected-item" : ""
+                      }`}
+                    >
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(file.path)}
+                        />
+                        <span className="extension-badge">
+                          .{file.extension}
+                        </span>
+                        <span
+                          className="detected-badge"
+                          title={`Detected: ${file.detected_mime}`}
+                        >
+                          content: {file.detected_extension}
                         </span>
                         <span className="file-path">{file.path}</span>
                       </label>

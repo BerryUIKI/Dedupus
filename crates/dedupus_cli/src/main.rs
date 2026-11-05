@@ -209,6 +209,21 @@ enum Commands {
         no_audio: bool,
     },
 
+    /// Find files whose extension does not match their actual content
+    BadExtensions {
+        /// Directories to scan
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+
+        /// Excluded directories
+        #[arg(short, long)]
+        exclude: Vec<PathBuf>,
+
+        /// Minimum file size in bytes
+        #[arg(short, long, default_value_t = 1)]
+        min_size: u64,
+    },
+
     /// Move specified files to the system Recycle Bin / Trash
     Trash {
         /// Files to move to Trash
@@ -616,6 +631,47 @@ fn main() -> Result<()> {
                     "  {:>10.2} KiB  [{}]  {}",
                     f.size as f64 / 1024.0,
                     f.reason,
+                    f.path.display()
+                );
+            }
+        }
+
+        Commands::BadExtensions {
+            directories,
+            exclude,
+            min_size,
+        } => {
+            println!(
+                "🧩 Scanning for mismatched extensions in: {:?}",
+                directories
+            );
+            let config = dedupus_core::BadExtensionFinderConfig {
+                included_directories: directories,
+                excluded_directories: exclude,
+                min_file_size: min_size,
+            };
+            let finder = dedupus_core::BadExtensionFinder::new(config, token);
+            let found = finder.find_bad_extensions(|event| match event {
+                ProgressEvent::ScanningDirectory { path } => {
+                    println!("📂 Scanning: {}", path.display());
+                }
+                ProgressEvent::FilesDiscovered { count } => {
+                    println!("📄 Scanned {} files...", count);
+                }
+                ProgressEvent::StageCompleted { stage_name } => {
+                    println!("✅ Stage: {}", stage_name);
+                }
+                _ => {}
+            })?;
+
+            println!("\nFound {} files with mismatched extensions:", found.len());
+            for f in &found {
+                println!(
+                    "  {:>10.2} KiB  .{} looks like {} ({})  {}",
+                    f.size as f64 / 1024.0,
+                    f.extension,
+                    f.detected_extension,
+                    f.detected_mime,
                     f.path.display()
                 );
             }

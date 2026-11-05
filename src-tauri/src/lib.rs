@@ -1,12 +1,13 @@
 use dedupus_core::{
     delete_permanently as core_delete_permanently, move_to_trash as core_move_to_trash,
-    replace_with_hardlinks as core_replace_with_hardlinks, BigFileFinder, BigFileFinderConfig,
-    BrokenFile, BrokenFileFinder, BrokenFileFinderConfig, CancellationToken, CleanReport,
-    DuplicateFinder, DuplicateFinderConfig, DuplicateGroup, EmptyFileFinder, EmptyFileFinderConfig,
-    EmptyFolderFinder, EmptyFolderFinderConfig, HashAlgorithm, ImageHashAlgorithm, ProgressEvent,
-    ScanCache, ScannedFile, SimilarAudioConfig, SimilarAudioFinder, SimilarAudioGroup,
-    SimilarImageConfig, SimilarImageFinder, SimilarImageGroup, SimilarVideoConfig,
-    SimilarVideoFinder, SimilarVideoGroup, TempFile, TempFileFinder, TempFileFinderConfig,
+    replace_with_hardlinks as core_replace_with_hardlinks, BadExtensionFile, BadExtensionFinder,
+    BadExtensionFinderConfig, BigFileFinder, BigFileFinderConfig, BrokenFile, BrokenFileFinder,
+    BrokenFileFinderConfig, CancellationToken, CleanReport, DuplicateFinder, DuplicateFinderConfig,
+    DuplicateGroup, EmptyFileFinder, EmptyFileFinderConfig, EmptyFolderFinder,
+    EmptyFolderFinderConfig, HashAlgorithm, ImageHashAlgorithm, ProgressEvent, ScanCache,
+    ScannedFile, SimilarAudioConfig, SimilarAudioFinder, SimilarAudioGroup, SimilarImageConfig,
+    SimilarImageFinder, SimilarImageGroup, SimilarVideoConfig, SimilarVideoFinder,
+    SimilarVideoGroup, TempFile, TempFileFinder, TempFileFinderConfig,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -348,6 +349,27 @@ fn scan_broken_files(
     finish_scan(state.inner(), &token, result)
 }
 
+#[tauri::command(async)]
+fn scan_bad_extensions(
+    app: AppHandle,
+    state: State<'_, ScanState>,
+    scan_id: u64,
+    directories: Vec<String>,
+    exclude: Vec<String>,
+    min_size: Option<u64>,
+) -> Result<ScanOutcome<Vec<BadExtensionFile>>, String> {
+    let config = BadExtensionFinderConfig {
+        included_directories: directories.into_iter().map(PathBuf::from).collect(),
+        excluded_directories: exclude.into_iter().map(PathBuf::from).collect(),
+        min_file_size: min_size.unwrap_or(1),
+    };
+
+    let token = state.begin()?;
+    let finder = BadExtensionFinder::new(config, token.clone());
+    let result = finder.find_bad_extensions(progress_emitter(app, scan_id, "bad_extensions"));
+    finish_scan(state.inner(), &token, result)
+}
+
 #[tauri::command]
 fn cancel_scan(state: State<'_, ScanState>) {
     state.cancel();
@@ -404,6 +426,7 @@ pub fn run() {
             scan_big_files,
             scan_temp_files,
             scan_broken_files,
+            scan_bad_extensions,
             cancel_scan,
             delete_to_trash,
             delete_permanently,
