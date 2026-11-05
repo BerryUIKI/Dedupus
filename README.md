@@ -39,6 +39,8 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
 - [x] **Safe Cleaning Actions**: Move to Recycle Bin / Trash, hardlinking, or permanent deletion.
 - [x] **Scan Cache**: Persist file hashes across scans to dramatically speed up subsequent runs.
 - [x] **Live Scan Feedback**: Real-time stage, running file count and hashing progress, with instant cancellation.
+- [x] **Large Result Lists**: Virtualized rendering (TanStack Virtual) keeps scans with 100,000+ rows responsive.
+- [x] **File Actions**: Right-click any result to open it, reveal it in Explorer, copy its path, move it to the Recycle Bin, delete it permanently, or replace duplicates with hard links.
 
 ---
 

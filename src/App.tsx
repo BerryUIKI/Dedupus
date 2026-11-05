@@ -1,7 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import type { ReactNode, RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { confirm as confirmDialog, open } from "@tauri-apps/plugin-dialog";
 import type { LucideIcon } from "lucide-react";
 import {
   FolderSearch,
@@ -30,6 +33,8 @@ import {
   X,
   Sun,
   Moon,
+  ExternalLink,
+  Link2,
 } from "lucide-react";
 import "./App.css";
 
@@ -146,6 +151,14 @@ interface ScanProgress {
   total?: number;
 }
 
+interface ContextMenuState {
+  x: number;
+  y: number;
+  path: string;
+  groupPaths?: string[];
+  isDirectory?: boolean;
+}
+
 type Mode =
   | "duplicates"
   | "similar_images"
@@ -164,6 +177,57 @@ function formatBytes(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+/**
+ * Renders only the visible slice of a large result list.
+ * Rows are absolutely positioned inside a spacer with the virtualizer's
+ * total height, and measured individually because cards have variable height.
+ */
+function VirtualList<T>({
+  scrollRef,
+  items,
+  estimateSize,
+  renderItem,
+  rowClassName,
+  emptyState,
+}: {
+  scrollRef: RefObject<HTMLElement | null>;
+  items: T[];
+  estimateSize: (index: number) => number;
+  renderItem: (item: T, index: number) => ReactNode;
+  rowClassName: string;
+  emptyState: ReactNode;
+}) {
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize,
+    overscan: 8,
+  });
+
+  if (items.length === 0) {
+    return <>{emptyState}</>;
+  }
+
+  return (
+    <div
+      className="virtual-list"
+      style={{ height: virtualizer.getTotalSize() }}
+    >
+      {virtualizer.getVirtualItems().map((virtualRow) => (
+        <div
+          key={virtualRow.key}
+          ref={virtualizer.measureElement}
+          data-index={virtualRow.index}
+          className={`virtual-row ${rowClassName}`}
+          style={{ transform: `translateY(${virtualRow.start}px)` }}
+        >
+          {renderItem(items[virtualRow.index], virtualRow.index)}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 const MODE_INFO: Record<Mode, { title: string; subtitle: string }> = {
@@ -263,6 +327,8 @@ export default function App() {
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const activeScanId = useRef(0);
+  const resultsRef = useRef<HTMLElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [similarImages, setSimilarImages] = useState<SimilarImageGroup[]>([]);
@@ -339,6 +405,33 @@ export default function App() {
       if (unlisten) unlisten();
     };
   }, []);
+
+  useEffect(() => {
+    resultsRef.current?.scrollTo({ top: 0 });
+  }, [mode]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const close = () => setContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     let active = true;
@@ -803,87 +896,227 @@ export default function App() {
     mode,
   ]);
 
+  const pathsForAction = (path: string): string[] =>
+    selectedPaths.has(path) && selectedPaths.size > 1
+      ? Array.from(selectedPaths)
+      : [path];
+
+  const openContextMenu = (
+    event: React.MouseEvent,
+    path: string,
+    options?: { groupPaths?: string[]; isDirectory?: boolean }
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 240;
+    const menuHeight = 320;
+    setContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+      path,
+      groupPaths: options?.groupPaths,
+      isDirectory: options?.isDirectory,
+    });
+  };
+
+  const applyCleanReport = (
+    report: CleanReport,
+    action: "trash" | "delete" | "hardlink"
+  ) => {
+    const succSet = new Set(report.successful);
+
+    // Remove cleaned files from state
+    if (mode === "duplicates") {
+      setDuplicates((prev) =>
+        prev
+          .map((g) => ({
+            ...g,
+            files: g.files.filter((f) => !succSet.has(f.path)),
+          }))
+          .filter((g) => g.files.length >= 2)
+      );
+    } else if (mode === "similar_images") {
+      setSimilarImages((prev) =>
+        prev
+          .map((g) => ({
+            ...g,
+            images: g.images.filter((img) => !succSet.has(img.path)),
+          }))
+          .filter((g) => g.images.length >= 2)
+      );
+    } else if (mode === "similar_audio") {
+      setSimilarAudio((prev) =>
+        prev
+          .map((g) => ({
+            ...g,
+            tracks: g.tracks.filter((t) => !succSet.has(t.path)),
+          }))
+          .filter((g) => g.tracks.length >= 2)
+      );
+    } else if (mode === "similar_video") {
+      setSimilarVideos((prev) =>
+        prev
+          .map((g) => ({
+            ...g,
+            videos: g.videos.filter((v) => !succSet.has(v.path)),
+          }))
+          .filter((g) => g.videos.length >= 2)
+      );
+    } else if (mode === "empty_files") {
+      setEmptyFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
+    } else if (mode === "empty_folders") {
+      setEmptyFolders((prev) => prev.filter((p) => !succSet.has(p)));
+    } else if (mode === "big_files") {
+      setBigFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
+    } else if (mode === "temp_files") {
+      setTempFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
+    } else if (mode === "broken_files") {
+      setBrokenFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
+    } else if (mode === "bad_extensions") {
+      setBadExtensions((prev) => prev.filter((f) => !succSet.has(f.path)));
+    }
+
+    setSelectedPaths(new Set());
+
+    const count = report.successful.length;
+    const verb =
+      action === "trash"
+        ? "Moved to Recycle Bin"
+        : action === "delete"
+          ? "Permanently deleted"
+          : "Replaced with hard links";
+    setStatusMsg(
+      `${verb} ${count} item${count === 1 ? "" : "s"} (${formatBytes(
+        report.bytes_freed
+      )} freed).`
+    );
+
+    if (report.failed.length > 0) {
+      const reason = report.failed[0]?.[1] ?? "unknown error";
+      setStatusMsg((prev) => `${prev} ${report.failed.length} failed: ${reason}`);
+    }
+  };
+
   // Trash action
   const handleMoveToTrash = async () => {
     if (selectedPaths.size === 0) return;
-    const pathsToTrash = Array.from(selectedPaths);
     setCleaning(true);
 
     try {
       const report = await invoke<CleanReport>("delete_to_trash", {
-        paths: pathsToTrash,
+        paths: Array.from(selectedPaths),
       });
-
-      const succSet = new Set(report.successful);
-
-      // Remove trashed files from state
-      if (mode === "duplicates") {
-        setDuplicates((prev) =>
-          prev
-            .map((g) => ({
-              ...g,
-              files: g.files.filter((f) => !succSet.has(f.path)),
-            }))
-            .filter((g) => g.files.length >= 2)
-        );
-      } else if (mode === "similar_images") {
-        setSimilarImages((prev) =>
-          prev
-            .map((g) => ({
-              ...g,
-              images: g.images.filter((img) => !succSet.has(img.path)),
-            }))
-            .filter((g) => g.images.length >= 2)
-        );
-      } else if (mode === "similar_audio") {
-        setSimilarAudio((prev) =>
-          prev
-            .map((g) => ({
-              ...g,
-              tracks: g.tracks.filter((t) => !succSet.has(t.path)),
-            }))
-            .filter((g) => g.tracks.length >= 2)
-        );
-      } else if (mode === "similar_video") {
-        setSimilarVideos((prev) =>
-          prev
-            .map((g) => ({
-              ...g,
-              videos: g.videos.filter((v) => !succSet.has(v.path)),
-            }))
-            .filter((g) => g.videos.length >= 2)
-        );
-      } else if (mode === "empty_files") {
-        setEmptyFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
-      } else if (mode === "empty_folders") {
-        setEmptyFolders((prev) => prev.filter((p) => !succSet.has(p)));
-      } else if (mode === "big_files") {
-        setBigFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
-      } else if (mode === "temp_files") {
-        setTempFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
-      } else if (mode === "broken_files") {
-        setBrokenFiles((prev) => prev.filter((f) => !succSet.has(f.path)));
-      } else if (mode === "bad_extensions") {
-        setBadExtensions((prev) => prev.filter((f) => !succSet.has(f.path)));
-      }
-
-      setSelectedPaths(new Set());
-      setStatusMsg(
-        `🗑️ Moved ${report.successful.length} items to Recycle Bin (${formatBytes(
-          report.bytes_freed
-        )} freed).`
-      );
-
-      if (report.failed.length > 0) {
-        setStatusMsg(
-          (prev) => `${prev} Failed to trash ${report.failed.length} items.`
-        );
-      }
+      applyCleanReport(report, "trash");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMsg(`Trash action failed: ${msg}`);
     } finally {
       setCleaning(false);
+    }
+  };
+
+  const handleTrashPaths = async (paths: string[]) => {
+    setContextMenu(null);
+    setCleaning(true);
+
+    try {
+      const report = await invoke<CleanReport>("delete_to_trash", { paths });
+      applyCleanReport(report, "trash");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Trash action failed: ${msg}`);
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const handlePermanentDelete = async (paths: string[]) => {
+    setContextMenu(null);
+
+    let confirmed = false;
+    try {
+      confirmed = await confirmDialog(
+        `Permanently delete ${
+          paths.length === 1 ? paths[0] : `${paths.length} items`
+        }?\n\nThis bypasses the Recycle Bin and cannot be undone.`,
+        { title: "Delete permanently", kind: "warning" }
+      );
+    } catch {
+      return;
+    }
+    if (!confirmed) return;
+
+    setCleaning(true);
+    try {
+      const report = await invoke<CleanReport>("delete_permanently", { paths });
+      applyCleanReport(report, "delete");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Permanent delete failed: ${msg}`);
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const handleHardlink = async (path: string, groupPaths: string[]) => {
+    setContextMenu(null);
+    const target = groupPaths.find((candidate) => candidate !== path);
+    if (!target) return;
+
+    let confirmed = false;
+    try {
+      confirmed = await confirmDialog(
+        `Replace this duplicate with a hard link to:\n${target}\n\nThe path stays the same and no extra disk space is used. Both files must be on the same volume.`,
+        { title: "Replace with hard link", kind: "warning" }
+      );
+    } catch {
+      return;
+    }
+    if (!confirmed) return;
+
+    setCleaning(true);
+    try {
+      const report = await invoke<CleanReport>("replace_with_hardlinks", {
+        target,
+        duplicates: [path],
+      });
+      applyCleanReport(report, "hardlink");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Hard link failed: ${msg}`);
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const handleOpenPath = async (path: string) => {
+    setContextMenu(null);
+    try {
+      await openPath(path);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Open failed: ${msg}`);
+    }
+  };
+
+  const handleRevealPath = async (path: string) => {
+    setContextMenu(null);
+    try {
+      await revealItemInDir(path);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Reveal failed: ${msg}`);
+    }
+  };
+
+  const handleCopyPath = async (path: string) => {
+    setContextMenu(null);
+    try {
+      await navigator.clipboard.writeText(path);
+      setStatusMsg("Path copied to clipboard.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(`Copy failed: ${msg}`);
     }
   };
 
@@ -896,6 +1129,8 @@ export default function App() {
       setStatusMsg(`Clear cache failed: ${msg}`);
     }
   };
+
+  const ctxPaths = contextMenu ? pathsForAction(contextMenu.path) : [];
 
   return (
     <div className="app-frame">
@@ -1265,7 +1500,9 @@ export default function App() {
                 {mode === "big_files" ||
                 mode === "temp_files" ||
                 mode === "broken_files" ||
-                mode === "bad_extensions"
+                mode === "bad_extensions" ||
+                mode === "empty_files" ||
+                mode === "empty_folders"
                   ? "Select All Files"
                   : "Select All Duplicates (Keep 1st)"}
               </span>
@@ -1291,211 +1528,73 @@ export default function App() {
 
       {/* Main Content Area */}
       <main
+        ref={resultsRef}
         className={`results-container ${
           selectedPaths.size > 0 ? "with-footer" : ""
         }`}
       >
         {mode === "duplicates" && (
-          <div className="list-view">
-            {duplicates.length === 0 ? (
-              <div className="empty-state">
-                <HardDrive size={48} opacity={0.3} />
-                <p>No duplicates found or no scan executed yet.</p>
-              </div>
-            ) : (
-              duplicates.map((group, gIdx) => {
-                const wasted = group.file_size * (group.files.length - 1);
-                return (
-                  <div key={gIdx} className="result-card">
-                    <div className="card-header">
-                      <span className="badge">Group #{gIdx + 1}</span>
-                      <span className="meta">
-                        {formatBytes(group.file_size)} / file
-                      </span>
-                      <span className="wasted-badge">
-                        Wasted: {formatBytes(wasted)}
-                      </span>
-                      <span className="hash-code" title={group.hash}>
-                        Hash: {group.hash.substring(0, 16)}...
-                      </span>
-                    </div>
-                    <ul className="file-list">
-                      {group.files.map((file, fIdx) => {
-                        const isSelected = selectedPaths.has(file.path);
-                        const isFirst = fIdx === 0;
-                        return (
-                          <li
-                            key={fIdx}
-                            className={`file-item ${
-                              isSelected ? "selected-item" : ""
-                            }`}
-                          >
-                            <label className="checkbox-label">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => toggleSelect(file.path)}
-                              />
-                              {isFirst && (
-                                <span className="keeper-badge">Original</span>
-                              )}
-                              <span className="file-path">{file.path}</span>
-                            </label>
-                            <div className="item-actions">
-                              <button
-                                className="icon-action-btn"
-                                title="Copy path"
-                                onClick={() =>
-                                  navigator.clipboard.writeText(file.path)
-                                }
-                              >
-                                <Copy size={14} />
-                              </button>
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
-        {mode === "similar_images" && (
-          <div className="list-view">
-            {similarImages.length === 0 ? (
-              <div className="empty-state">
-                <Images size={48} opacity={0.3} />
-                <p>No similar images found or scan not started.</p>
-              </div>
-            ) : (
-              similarImages.map((group, gIdx) => (
-                <div key={gIdx} className="result-card">
-                  <div className="card-header">
-                    <span className="badge purple-badge">
-                      Image Group #{gIdx + 1}
-                    </span>
-                    <span className="meta">
-                      {group.images.length} candidates
-                    </span>
-                    <span className="tolerance-tag">
-                      {group.similarity_level}
-                    </span>
-                  </div>
-                  <ul className="file-list">
-                    {group.images.map((img, iIdx) => {
-                      const isHighestRes = iIdx === 0;
-                      const isSelected = selectedPaths.has(img.path);
-                      return (
-                        <li
-                          key={iIdx}
-                          className={`file-item ${
-                            isSelected ? "selected-item" : ""
-                          }`}
-                        >
-                          <label className="checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={() => toggleSelect(img.path)}
-                            />
-                            {isHighestRes && (
-                              <span
-                                className="best-tag"
-                                title="Highest resolution in group"
-                              >
-                                <Sparkles size={12} /> Best Res
-                              </span>
-                            )}
-                            <span className="file-path">{img.path}</span>
-                          </label>
-                          <div className="image-meta">
-                            <span className="res-badge">
-                              {img.width} × {img.height}
-                            </span>
-                            <span className="size-badge">
-                              {formatBytes(img.size)}
-                            </span>
-                            <button
-                              className="icon-action-btn"
-                              title="Copy path"
-                              onClick={() =>
-                                navigator.clipboard.writeText(img.path)
-                              }
-                            >
-                              <Copy size={14} />
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={duplicates}
+            rowClassName="virtual-group-row"
+            estimateSize={(index) => 95 + duplicates[index].files.length * 45}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <HardDrive size={48} opacity={0.3} />
+                  <p>No duplicates found or no scan executed yet.</p>
                 </div>
-              ))
-            )}
-          </div>
-        )}
-
-        {mode === "similar_audio" && (
-          <div className="list-view">
-            {similarAudio.length === 0 ? (
-              <div className="empty-state">
-                <Music size={48} opacity={0.3} />
-                <p>No similar audio tracks found or scan not started.</p>
               </div>
-            ) : (
-              similarAudio.map((group, gIdx) => (
-                <div key={gIdx} className="result-card">
+            }
+            renderItem={(group, gIdx) => {
+              const wasted = group.file_size * (group.files.length - 1);
+              const groupPaths = group.files.map((file) => file.path);
+              return (
+                <div className="result-card">
                   <div className="card-header">
-                    <span className="badge teal-badge">
-                      Audio Group #{gIdx + 1}
-                    </span>
+                    <span className="badge">Group #{gIdx + 1}</span>
                     <span className="meta">
-                      {group.tracks.length} tracks
+                      {formatBytes(group.file_size)} / file
                     </span>
-                    <span className="tolerance-tag">
-                      {group.similarity_info}
+                    <span className="wasted-badge">
+                      Wasted: {formatBytes(wasted)}
+                    </span>
+                    <span className="hash-code" title={group.hash}>
+                      Hash: {group.hash.substring(0, 16)}...
                     </span>
                   </div>
                   <ul className="file-list">
-                    {group.tracks.map((track, tIdx) => {
-                      const isSelected = selectedPaths.has(track.path);
-                      const isFirst = tIdx === 0;
+                    {group.files.map((file, fIdx) => {
+                      const isSelected = selectedPaths.has(file.path);
+                      const isFirst = fIdx === 0;
                       return (
                         <li
-                          key={tIdx}
+                          key={fIdx}
                           className={`file-item ${
                             isSelected ? "selected-item" : ""
                           }`}
+                          onContextMenu={(event) =>
+                            openContextMenu(event, file.path, { groupPaths })
+                          }
                         >
                           <label className="checkbox-label">
                             <input
                               type="checkbox"
                               checked={isSelected}
-                              onChange={() => toggleSelect(track.path)}
+                              onChange={() => toggleSelect(file.path)}
                             />
                             {isFirst && (
                               <span className="keeper-badge">Original</span>
                             )}
-                            <span className="file-path">{track.path}</span>
+                            <span className="file-path">{file.path}</span>
                           </label>
-                          <div className="image-meta">
-                            <span className="res-badge">
-                              {track.duration_secs.toFixed(1)}s
-                            </span>
-                            <span className="res-badge">
-                              {track.sample_rate}Hz ({track.channels}ch)
-                            </span>
-                            <span className="size-badge">
-                              {formatBytes(track.size)}
-                            </span>
+                          <div className="item-actions">
                             <button
                               className="icon-action-btn"
                               title="Copy path"
                               onClick={() =>
-                                navigator.clipboard.writeText(track.path)
+                                navigator.clipboard.writeText(file.path)
                               }
                             >
                               <Copy size={14} />
@@ -1506,359 +1605,552 @@ export default function App() {
                     })}
                   </ul>
                 </div>
-              ))
+              );
+            }}
+          />
+        )}
+
+        {mode === "similar_images" && (
+          <VirtualList
+            scrollRef={resultsRef}
+            items={similarImages}
+            rowClassName="virtual-group-row"
+            estimateSize={(index) => 95 + similarImages[index].images.length * 45}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <Images size={48} opacity={0.3} />
+                  <p>No similar images found or scan not started.</p>
+                </div>
+              </div>
+            }
+            renderItem={(group, gIdx) => (
+              <div className="result-card">
+                <div className="card-header">
+                  <span className="badge purple-badge">
+                    Image Group #{gIdx + 1}
+                  </span>
+                  <span className="meta">{group.images.length} candidates</span>
+                  <span className="tolerance-tag">
+                    {group.similarity_level}
+                  </span>
+                </div>
+                <ul className="file-list">
+                  {group.images.map((img, iIdx) => {
+                    const isHighestRes = iIdx === 0;
+                    const isSelected = selectedPaths.has(img.path);
+                    return (
+                      <li
+                        key={iIdx}
+                        className={`file-item ${
+                          isSelected ? "selected-item" : ""
+                        }`}
+                        onContextMenu={(event) =>
+                          openContextMenu(event, img.path)
+                        }
+                      >
+                        <label className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(img.path)}
+                          />
+                          {isHighestRes && (
+                            <span
+                              className="best-tag"
+                              title="Highest resolution in group"
+                            >
+                              <Sparkles size={12} /> Best Res
+                            </span>
+                          )}
+                          <span className="file-path">{img.path}</span>
+                        </label>
+                        <div className="image-meta">
+                          <span className="res-badge">
+                            {img.width} × {img.height}
+                          </span>
+                          <span className="size-badge">
+                            {formatBytes(img.size)}
+                          </span>
+                          <button
+                            className="icon-action-btn"
+                            title="Copy path"
+                            onClick={() =>
+                              navigator.clipboard.writeText(img.path)
+                            }
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
-          </div>
+          />
+        )}
+
+        {mode === "similar_audio" && (
+          <VirtualList
+            scrollRef={resultsRef}
+            items={similarAudio}
+            rowClassName="virtual-group-row"
+            estimateSize={(index) => 95 + similarAudio[index].tracks.length * 45}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <Music size={48} opacity={0.3} />
+                  <p>No similar audio tracks found or scan not started.</p>
+                </div>
+              </div>
+            }
+            renderItem={(group, gIdx) => (
+              <div className="result-card">
+                <div className="card-header">
+                  <span className="badge teal-badge">
+                    Audio Group #{gIdx + 1}
+                  </span>
+                  <span className="meta">{group.tracks.length} tracks</span>
+                  <span className="tolerance-tag">
+                    {group.similarity_info}
+                  </span>
+                </div>
+                <ul className="file-list">
+                  {group.tracks.map((track, tIdx) => {
+                    const isSelected = selectedPaths.has(track.path);
+                    const isFirst = tIdx === 0;
+                    return (
+                      <li
+                        key={tIdx}
+                        className={`file-item ${
+                          isSelected ? "selected-item" : ""
+                        }`}
+                        onContextMenu={(event) =>
+                          openContextMenu(event, track.path)
+                        }
+                      >
+                        <label className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(track.path)}
+                          />
+                          {isFirst && (
+                            <span className="keeper-badge">Original</span>
+                          )}
+                          <span className="file-path">{track.path}</span>
+                        </label>
+                        <div className="image-meta">
+                          <span className="res-badge">
+                            {track.duration_secs.toFixed(1)}s
+                          </span>
+                          <span className="res-badge">
+                            {track.sample_rate}Hz ({track.channels}ch)
+                          </span>
+                          <span className="size-badge">
+                            {formatBytes(track.size)}
+                          </span>
+                          <button
+                            className="icon-action-btn"
+                            title="Copy path"
+                            onClick={() =>
+                              navigator.clipboard.writeText(track.path)
+                            }
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          />
         )}
 
         {mode === "similar_video" && (
-          <div className="list-view">
-            {similarVideos.length === 0 ? (
-              <div className="empty-state">
-                <Video size={48} opacity={0.3} />
-                <p>No similar videos found or scan not started.</p>
-              </div>
-            ) : (
-              similarVideos.map((group, gIdx) => (
-                <div key={gIdx} className="result-card">
-                  <div className="card-header">
-                    <span className="badge amber-badge">
-                      Video Group #{gIdx + 1}
-                    </span>
-                    <span className="meta">
-                      {group.videos.length} videos
-                    </span>
-                    <span className="tolerance-tag">
-                      {group.similarity_info}
-                    </span>
-                  </div>
-                  <ul className="file-list">
-                    {group.videos.map((vid, vIdx) => {
-                      const isSelected = selectedPaths.has(vid.path);
-                      const isFirst = vIdx === 0;
-                      return (
-                        <li
-                          key={vIdx}
-                          className={`file-item ${
-                            isSelected ? "selected-item" : ""
-                          }`}
-                        >
-                          <label className="checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={() => toggleSelect(vid.path)}
-                            />
-                            {isFirst && (
-                              <span className="best-tag">
-                                <Sparkles size={12} /> Best
-                              </span>
-                            )}
-                            <span className="file-path">{vid.path}</span>
-                          </label>
-                          <div className="image-meta">
-                            {vid.width && vid.height && (
-                              <span className="res-badge">
-                                {vid.width} × {vid.height}
-                              </span>
-                            )}
-                            <span className="size-badge">
-                              {formatBytes(vid.size)}
-                            </span>
-                            <button
-                              className="icon-action-btn"
-                              title="Copy path"
-                              onClick={() =>
-                                navigator.clipboard.writeText(vid.path)
-                              }
-                            >
-                              <Copy size={14} />
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={similarVideos}
+            rowClassName="virtual-group-row"
+            estimateSize={(index) => 95 + similarVideos[index].videos.length * 45}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <Video size={48} opacity={0.3} />
+                  <p>No similar videos found or scan not started.</p>
                 </div>
-              ))
+              </div>
+            }
+            renderItem={(group, gIdx) => (
+              <div className="result-card">
+                <div className="card-header">
+                  <span className="badge amber-badge">
+                    Video Group #{gIdx + 1}
+                  </span>
+                  <span className="meta">{group.videos.length} videos</span>
+                  <span className="tolerance-tag">
+                    {group.similarity_info}
+                  </span>
+                </div>
+                <ul className="file-list">
+                  {group.videos.map((vid, vIdx) => {
+                    const isSelected = selectedPaths.has(vid.path);
+                    const isFirst = vIdx === 0;
+                    return (
+                      <li
+                        key={vIdx}
+                        className={`file-item ${
+                          isSelected ? "selected-item" : ""
+                        }`}
+                        onContextMenu={(event) =>
+                          openContextMenu(event, vid.path)
+                        }
+                      >
+                        <label className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(vid.path)}
+                          />
+                          {isFirst && (
+                            <span className="best-tag">
+                              <Sparkles size={12} /> Best
+                            </span>
+                          )}
+                          <span className="file-path">{vid.path}</span>
+                        </label>
+                        <div className="image-meta">
+                          {vid.width && vid.height && (
+                            <span className="res-badge">
+                              {vid.width} × {vid.height}
+                            </span>
+                          )}
+                          <span className="size-badge">
+                            {formatBytes(vid.size)}
+                          </span>
+                          <button
+                            className="icon-action-btn"
+                            title="Copy path"
+                            onClick={() =>
+                              navigator.clipboard.writeText(vid.path)
+                            }
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
-          </div>
+          />
         )}
 
         {mode === "big_files" && (
-          <div className="list-view">
-            {bigFiles.length === 0 ? (
-              <div className="empty-state">
-                <ArrowDownWideNarrow size={48} opacity={0.3} />
-                <p>
-                  No files above the size threshold found, or scan not started.
-                </p>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={bigFiles}
+            rowClassName="virtual-item-row"
+            estimateSize={() => 52}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <ArrowDownWideNarrow size={48} opacity={0.3} />
+                  <p>
+                    No files above the size threshold found, or scan not
+                    started.
+                  </p>
+                </div>
               </div>
-            ) : (
-              <ul className="simple-list">
-                {bigFiles.map((file, idx) => {
-                  const isSelected = selectedPaths.has(file.path);
-                  return (
-                    <li
-                      key={idx}
-                      className={`file-item ${
-                        isSelected ? "selected-item" : ""
-                      }`}
+            }
+            renderItem={(file, idx) => {
+              const isSelected = selectedPaths.has(file.path);
+              return (
+                <div
+                  className={`file-item ${
+                    isSelected ? "selected-item" : ""
+                  }`}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, file.path)
+                  }
+                >
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(file.path)}
+                    />
+                    <span className="rank-badge">#{idx + 1}</span>
+                    <span className="file-path">{file.path}</span>
+                  </label>
+                  <div className="image-meta">
+                    <span className="size-badge big-size-badge">
+                      {formatBytes(file.size)}
+                    </span>
+                    <button
+                      className="icon-action-btn"
+                      title="Copy path"
+                      onClick={() =>
+                        navigator.clipboard.writeText(file.path)
+                      }
                     >
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(file.path)}
-                        />
-                        <span className="rank-badge">#{idx + 1}</span>
-                        <span className="file-path">{file.path}</span>
-                      </label>
-                      <div className="image-meta">
-                        <span className="size-badge big-size-badge">
-                          {formatBytes(file.size)}
-                        </span>
-                        <button
-                          className="icon-action-btn"
-                          title="Copy path"
-                          onClick={() =>
-                            navigator.clipboard.writeText(file.path)
-                          }
-                        >
-                          <Copy size={14} />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }}
+          />
         )}
 
         {mode === "temp_files" && (
-          <div className="list-view">
-            {tempFiles.length === 0 ? (
-              <div className="empty-state">
-                <Eraser size={48} opacity={0.3} />
-                <p>No temporary files found, or scan not started.</p>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={tempFiles}
+            rowClassName="virtual-item-row"
+            estimateSize={() => 52}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <Eraser size={48} opacity={0.3} />
+                  <p>No temporary files found, or scan not started.</p>
+                </div>
               </div>
-            ) : (
-              <ul className="simple-list">
-                {tempFiles.map((file, idx) => {
-                  const isSelected = selectedPaths.has(file.path);
-                  return (
-                    <li
-                      key={idx}
-                      className={`file-item ${
-                        isSelected ? "selected-item" : ""
-                      }`}
+            }
+            renderItem={(file) => {
+              const isSelected = selectedPaths.has(file.path);
+              return (
+                <div
+                  className={`file-item ${
+                    isSelected ? "selected-item" : ""
+                  }`}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, file.path)
+                  }
+                >
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(file.path)}
+                    />
+                    <span className="temp-reason-badge">{file.reason}</span>
+                    <span className="file-path">{file.path}</span>
+                  </label>
+                  <div className="image-meta">
+                    <span className="size-badge">
+                      {formatBytes(file.size)}
+                    </span>
+                    <button
+                      className="icon-action-btn"
+                      title="Copy path"
+                      onClick={() =>
+                        navigator.clipboard.writeText(file.path)
+                      }
                     >
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(file.path)}
-                        />
-                        <span className="temp-reason-badge">{file.reason}</span>
-                        <span className="file-path">{file.path}</span>
-                      </label>
-                      <div className="image-meta">
-                        <span className="size-badge">
-                          {formatBytes(file.size)}
-                        </span>
-                        <button
-                          className="icon-action-btn"
-                          title="Copy path"
-                          onClick={() =>
-                            navigator.clipboard.writeText(file.path)
-                          }
-                        >
-                          <Copy size={14} />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }}
+          />
         )}
 
         {mode === "broken_files" && (
-          <div className="list-view">
-            {brokenFiles.length === 0 ? (
-              <div className="empty-state">
-                <AlertTriangle size={48} opacity={0.3} />
-                <p>No broken files found, or scan not started.</p>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={brokenFiles}
+            rowClassName="virtual-item-row"
+            estimateSize={() => 52}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <AlertTriangle size={48} opacity={0.3} />
+                  <p>No broken files found, or scan not started.</p>
+                </div>
               </div>
-            ) : (
-              <ul className="simple-list">
-                {brokenFiles.map((file, idx) => {
-                  const isSelected = selectedPaths.has(file.path);
-                  return (
-                    <li
-                      key={idx}
-                      className={`file-item ${
-                        isSelected ? "selected-item" : ""
-                      }`}
+            }
+            renderItem={(file) => {
+              const isSelected = selectedPaths.has(file.path);
+              return (
+                <div
+                  className={`file-item ${
+                    isSelected ? "selected-item" : ""
+                  }`}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, file.path)
+                  }
+                >
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(file.path)}
+                    />
+                    <span className="broken-reason-badge">{file.reason}</span>
+                    <span className="file-path">{file.path}</span>
+                  </label>
+                  <div className="image-meta">
+                    <span className="size-badge">
+                      {formatBytes(file.size)}
+                    </span>
+                    <button
+                      className="icon-action-btn"
+                      title="Copy path"
+                      onClick={() =>
+                        navigator.clipboard.writeText(file.path)
+                      }
                     >
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(file.path)}
-                        />
-                        <span className="broken-reason-badge">
-                          {file.reason}
-                        </span>
-                        <span className="file-path">{file.path}</span>
-                      </label>
-                      <div className="image-meta">
-                        <span className="size-badge">
-                          {formatBytes(file.size)}
-                        </span>
-                        <button
-                          className="icon-action-btn"
-                          title="Copy path"
-                          onClick={() =>
-                            navigator.clipboard.writeText(file.path)
-                          }
-                        >
-                          <Copy size={14} />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }}
+          />
         )}
 
         {mode === "bad_extensions" && (
-          <div className="list-view">
-            {badExtensions.length === 0 ? (
-              <div className="empty-state">
-                <FileWarning size={48} opacity={0.3} />
-                <p>No mismatched extensions found, or scan not started.</p>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={badExtensions}
+            rowClassName="virtual-item-row"
+            estimateSize={() => 52}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <FileWarning size={48} opacity={0.3} />
+                  <p>No mismatched extensions found, or scan not started.</p>
+                </div>
               </div>
-            ) : (
-              <ul className="simple-list">
-                {badExtensions.map((file, idx) => {
-                  const isSelected = selectedPaths.has(file.path);
-                  return (
-                    <li
-                      key={idx}
-                      className={`file-item ${
-                        isSelected ? "selected-item" : ""
-                      }`}
+            }
+            renderItem={(file) => {
+              const isSelected = selectedPaths.has(file.path);
+              return (
+                <div
+                  className={`file-item ${
+                    isSelected ? "selected-item" : ""
+                  }`}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, file.path)
+                  }
+                >
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(file.path)}
+                    />
+                    <span className="extension-badge">.{file.extension}</span>
+                    <span
+                      className="detected-badge"
+                      title={`Detected: ${file.detected_mime}`}
                     >
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(file.path)}
-                        />
-                        <span className="extension-badge">
-                          .{file.extension}
-                        </span>
-                        <span
-                          className="detected-badge"
-                          title={`Detected: ${file.detected_mime}`}
-                        >
-                          content: {file.detected_extension}
-                        </span>
-                        <span className="file-path">{file.path}</span>
-                      </label>
-                      <div className="image-meta">
-                        <span className="size-badge">
-                          {formatBytes(file.size)}
-                        </span>
-                        <button
-                          className="icon-action-btn"
-                          title="Copy path"
-                          onClick={() =>
-                            navigator.clipboard.writeText(file.path)
-                          }
-                        >
-                          <Copy size={14} />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+                      content: {file.detected_extension}
+                    </span>
+                    <span className="file-path">{file.path}</span>
+                  </label>
+                  <div className="image-meta">
+                    <span className="size-badge">
+                      {formatBytes(file.size)}
+                    </span>
+                    <button
+                      className="icon-action-btn"
+                      title="Copy path"
+                      onClick={() =>
+                        navigator.clipboard.writeText(file.path)
+                      }
+                    >
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }}
+          />
         )}
 
         {mode === "empty_files" && (
-          <div className="list-view">
-            {emptyFiles.length === 0 ? (
-              <div className="empty-state">
-                <Trash2 size={48} opacity={0.3} />
-                <p>No empty files found or scan not started.</p>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={emptyFiles}
+            rowClassName="virtual-item-row"
+            estimateSize={() => 52}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <Trash2 size={48} opacity={0.3} />
+                  <p>No empty files found or scan not started.</p>
+                </div>
               </div>
-            ) : (
-              <ul className="simple-list">
-                {emptyFiles.map((file, idx) => {
-                  const isSelected = selectedPaths.has(file.path);
-                  return (
-                    <li
-                      key={idx}
-                      className={`file-item ${
-                        isSelected ? "selected-item" : ""
-                      }`}
-                    >
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(file.path)}
-                        />
-                        <span className="file-path">{file.path}</span>
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+            }
+            renderItem={(file) => {
+              const isSelected = selectedPaths.has(file.path);
+              return (
+                <div
+                  className={`file-item ${
+                    isSelected ? "selected-item" : ""
+                  }`}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, file.path)
+                  }
+                >
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(file.path)}
+                    />
+                    <span className="file-path">{file.path}</span>
+                  </label>
+                </div>
+              );
+            }}
+          />
         )}
 
         {mode === "empty_folders" && (
-          <div className="list-view">
-            {emptyFolders.length === 0 ? (
-              <div className="empty-state">
-                <FolderMinus size={48} opacity={0.3} />
-                <p>No empty folders found or scan not started.</p>
+          <VirtualList
+            scrollRef={resultsRef}
+            items={emptyFolders}
+            rowClassName="virtual-item-row"
+            estimateSize={() => 52}
+            emptyState={
+              <div className="list-view">
+                <div className="empty-state">
+                  <FolderMinus size={48} opacity={0.3} />
+                  <p>No empty folders found or scan not started.</p>
+                </div>
               </div>
-            ) : (
-              <ul className="simple-list">
-                {emptyFolders.map((folder, idx) => {
-                  const isSelected = selectedPaths.has(folder);
-                  return (
-                    <li
-                      key={idx}
-                      className={`file-item ${
-                        isSelected ? "selected-item" : ""
-                      }`}
-                    >
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(folder)}
-                        />
-                        <span className="file-path">{folder}</span>
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+            }
+            renderItem={(folder) => {
+              const isSelected = selectedPaths.has(folder);
+              return (
+                <div
+                  className={`file-item ${
+                    isSelected ? "selected-item" : ""
+                  }`}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, folder, { isDirectory: true })
+                  }
+                >
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(folder)}
+                    />
+                    <span className="file-path">{folder}</span>
+                  </label>
+                </div>
+              );
+            }}
+          />
         )}
       </main>
 
@@ -1895,6 +2187,77 @@ export default function App() {
             </button>
           </div>
         </footer>
+      )}
+
+      {contextMenu && (
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            className="context-item"
+            onClick={() => handleOpenPath(contextMenu.path)}
+          >
+            <ExternalLink size={14} />
+            <span>
+              {contextMenu.isDirectory ? "Open folder" : "Open file"}
+            </span>
+          </button>
+          <button
+            className="context-item"
+            onClick={() => handleRevealPath(contextMenu.path)}
+          >
+            <FolderOpen size={14} />
+            <span>Reveal in Explorer</span>
+          </button>
+          <button
+            className="context-item"
+            onClick={() => handleCopyPath(contextMenu.path)}
+          >
+            <Copy size={14} />
+            <span>Copy path</span>
+          </button>
+
+          <div className="context-separator" />
+
+          {mode === "duplicates" &&
+            contextMenu.groupPaths &&
+            contextMenu.groupPaths.length >= 2 && (
+              <button
+                className="context-item"
+                onClick={() =>
+                  handleHardlink(contextMenu.path, contextMenu.groupPaths!)
+                }
+              >
+                <Link2 size={14} />
+                <span>Replace with hard link</span>
+              </button>
+            )}
+
+          <button
+            className="context-item"
+            onClick={() => handleTrashPaths(ctxPaths)}
+            disabled={cleaning}
+          >
+            <Trash2 size={14} />
+            <span>
+              Move to Recycle Bin
+              {ctxPaths.length > 1 ? ` (${ctxPaths.length})` : ""}
+            </span>
+          </button>
+          <button
+            className="context-item danger"
+            onClick={() => handlePermanentDelete(ctxPaths)}
+            disabled={cleaning}
+          >
+            <AlertTriangle size={14} />
+            <span>
+              Delete permanently
+              {ctxPaths.length > 1 ? ` (${ctxPaths.length})` : ""}
+            </span>
+          </button>
+        </div>
       )}
       </div>
       </div>

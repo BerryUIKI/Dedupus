@@ -16,6 +16,7 @@ Dedupus is a high-performance duplicate file finder and disk cleaner inspired by
 - **`src-tauri/`**: Tauri v2 desktop application backend (interfacing with `dedupus_core`).
 - **`src/`** or **`frontend/`**: Modern Web-based UI built with Vite + React 19 + TypeScript + Tailwind CSS + Radix/shadcn.
   - Virtualization via `@tanstack/react-virtual` to seamlessly display lists with >100,000 items.
+  - Right-click result menu: open, reveal in Explorer, copy path, Recycle Bin, permanent delete, and hardlink replacement for duplicate groups.
 
 ### Comparison & Modernization vs. Czkawka
 - **GUI Framework**: Czkawka uses GTK4 / Slint; Dedupus adopts Tauri v2 + React 19 for seamless cross-platform desktop integration (native WebView2 on Windows) without bulky GTK dependencies.
