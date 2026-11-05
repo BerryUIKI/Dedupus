@@ -32,7 +32,7 @@ Dedupus decouples raw high-throughput scanning logic from UI presentation:
   - [x] Empty files & empty directory trees.
   - [x] Temporary & cache files.
   - [x] Broken symlinks.
-  - [ ] Invalid Windows shortcuts (.lnk).
+  - [x] Invalid Windows shortcuts (.lnk).
   - [x] Broken media files (corrupted images, unreadable archives, invalid audio).
   - [x] Bad file extensions (content signature does not match the file name).
   - [x] Big files analyzer.

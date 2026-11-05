@@ -54,6 +54,9 @@ symphonia = { version = "0.5.4", default-features = false, features = ["mp3", "f
 # File content detection (bad-extension scanner)
 infer = "0.22"
 
+# Windows shortcut parsing (broken .lnk detection)
+lnk = "0.6"
+
 # Testing
 tempfile = "3.10"
 

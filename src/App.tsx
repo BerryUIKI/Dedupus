@@ -199,7 +199,7 @@ const MODE_INFO: Record<Mode, { title: string; subtitle: string }> = {
   broken_files: {
     title: "Broken Files",
     subtitle:
-      "Images, archives, PDFs and audio validated for corruption; broken symlinks included.",
+      "Images, archives, PDFs and audio validated for corruption; broken symlinks and Windows shortcuts included.",
   },
   bad_extensions: {
     title: "Bad Extensions",

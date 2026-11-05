@@ -341,6 +341,7 @@ fn scan_broken_files(
         check_archives: true,
         check_audio: true,
         check_symlinks: true,
+        check_shortcuts: true,
     };
 
     let token = state.begin()?;

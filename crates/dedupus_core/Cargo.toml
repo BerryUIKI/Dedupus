@@ -24,5 +24,8 @@ image.workspace = true
 symphonia.workspace = true
 infer.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+lnk.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

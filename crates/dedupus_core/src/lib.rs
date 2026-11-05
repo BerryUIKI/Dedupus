@@ -417,6 +417,7 @@ mod tests {
             check_archives: true,
             check_audio: true,
             check_symlinks: true,
+            check_shortcuts: true,
         };
         let token = CancellationToken::new();
         let finder = BrokenFileFinder::new(config, token);
@@ -429,6 +430,33 @@ mod tests {
         assert!(!broken.iter().any(|b| b.path.ends_with("valid.png")));
         assert!(!broken.iter().any(|b| b.path.ends_with("good.zip")));
         assert!(!broken.iter().any(|b| b.path.ends_with("notes.txt")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_invalid_shortcut_is_reported() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+
+        File::create(path.join("broken.lnk"))
+            .unwrap()
+            .write_all(b"not a shortcut")
+            .unwrap();
+
+        let config = BrokenFileFinderConfig {
+            included_directories: vec![path.to_path_buf()],
+            excluded_directories: vec![],
+            check_images: true,
+            check_archives: true,
+            check_audio: true,
+            check_symlinks: true,
+            check_shortcuts: true,
+        };
+        let token = CancellationToken::new();
+        let finder = BrokenFileFinder::new(config, token);
+        let broken = finder.find_broken_files(|_| {}).unwrap();
+
+        assert!(broken.iter().any(|b| b.path.ends_with("broken.lnk")));
     }
 
     #[test]

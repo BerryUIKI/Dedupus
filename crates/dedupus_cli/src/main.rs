@@ -207,6 +207,10 @@ enum Commands {
         /// Skip audio validation
         #[arg(long)]
         no_audio: bool,
+
+        /// Skip .lnk shortcut validation
+        #[arg(long)]
+        no_shortcuts: bool,
     },
 
     /// Find files whose extension does not match their actual content
@@ -601,6 +605,7 @@ fn main() -> Result<()> {
             no_images,
             no_archives,
             no_audio,
+            no_shortcuts,
         } => {
             println!("🩺 Scanning for broken files in: {:?}", directories);
             let config = dedupus_core::BrokenFileFinderConfig {
@@ -610,6 +615,7 @@ fn main() -> Result<()> {
                 check_archives: !no_archives,
                 check_audio: !no_audio,
                 check_symlinks: true,
+                check_shortcuts: !no_shortcuts,
             };
             let finder = dedupus_core::BrokenFileFinder::new(config, token);
             let broken = finder.find_broken_files(|event| match event {
