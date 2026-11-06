@@ -22,12 +22,21 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "BerryUIKI",
+    "homepage": "https://github.com/BerryUIKI/Dedupus",
+    "copyright": "Copyright © 2026 BerryUIKI",
+    "license": "MIT OR Apache-2.0",
+    "licenseFile": "../LICENSE",
+    "category": "Utility",
+    "shortDescription": "Fast duplicate file finder and disk cleaner.",
+    "longDescription": "Dedupus finds exact duplicates, visually similar images, similar audio and video, empty files and folders, temporary files, broken files, mismatched extensions, invalid shortcuts and the largest files on your disks. Clean safely with the Recycle Bin, permanent deletion or hard links.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

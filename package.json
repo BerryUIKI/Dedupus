@@ -2,6 +2,13 @@
   "name": "dedupus",
   "private": true,
   "version": "0.1.0",
+  "description": "A blazing fast duplicate file finder and disk cleaner.",
+  "license": "MIT OR Apache-2.0",
+  "author": "BerryUIKI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BerryUIKI/Dedupus.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
