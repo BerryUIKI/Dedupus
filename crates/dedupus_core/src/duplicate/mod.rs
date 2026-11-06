@@ -1,6 +1,6 @@
 use crate::common::{
-    CancellationToken, DiscoveryThrottle, HashAlgorithm, ProgressCounter, ProgressEvent,
-    ProgressReporter, ScannedFile,
+    walk_files, CancellationToken, HashAlgorithm, ProgressCounter, ProgressEvent, ProgressReporter,
+    ScannedFile,
 };
 use anyhow::Result;
 use rayon::prelude::*;
@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 const PREFIX_HASH_SIZE: usize = 4096;
 
@@ -61,60 +60,33 @@ impl DuplicateFinder {
     where
         F: FnMut(ProgressEvent) + Send,
     {
-        if self.cancellation_token.is_cancelled() {
-            return Ok(Vec::new());
-        }
-
         // --- STAGE 1: Directory traversal & size collection ---
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Starting directory scan".to_string(),
         });
 
         let mut files_by_size: HashMap<u64, Vec<ScannedFile>> = HashMap::new();
-        let mut total_discovered = 0;
-        let mut discovery = DiscoveryThrottle::new();
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                return Ok(Vec::new());
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(Vec::new());
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let completed = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
-                let metadata = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Ok(metadata) = entry.metadata() else {
+                    return;
                 };
 
                 let size = metadata.len();
                 if size < self.config.min_file_size {
-                    continue;
+                    return;
                 }
-                if let Some(max) = self.config.max_file_size {
-                    if size > max {
-                        continue;
-                    }
+                if self.config.max_file_size.is_some_and(|max| size > max) {
+                    return;
                 }
 
                 let modified_secs = metadata
@@ -128,19 +100,12 @@ impl DuplicateFinder {
                     size,
                     modified_secs,
                 });
+            },
+        );
 
-                total_discovered += 1;
-                if discovery.should_emit() {
-                    on_progress(ProgressEvent::FilesDiscovered {
-                        count: total_discovered,
-                    });
-                }
-            }
+        if !completed {
+            return Ok(Vec::new());
         }
-
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_discovered,
-        });
 
         // Retain only groups with 2 or more files with the exact same size
         files_by_size.retain(|_, files| files.len() >= 2);
@@ -222,11 +187,9 @@ impl DuplicateFinder {
                     reporter.report(ProgressEvent::HashingProgress { processed, total });
                 }
 
-                // Check cache if enabled
-                if let Some(c) = &cache {
-                    if let Some(h) =
-                        c.get_file_hash(&file.path, file.size, file.modified_secs.unwrap_or(0))
-                    {
+                // Check cache if enabled and the modification time is known.
+                if let (Some(cache), Some(modified_secs)) = (&cache, file.modified_secs) {
+                    if let Some(h) = cache.get_file_hash(&file.path, file.size, modified_secs) {
                         return Some((file.size, h.to_string(), file));
                     }
                 }
@@ -241,12 +204,9 @@ impl DuplicateFinder {
         // Update and save cache with newly computed hashes
         if let Some(mut c) = cache {
             for (size, hash, file) in &full_hashes {
-                c.insert_file_hash(
-                    file.path.clone(),
-                    *size,
-                    file.modified_secs.unwrap_or(0),
-                    hash.clone(),
-                );
+                if let Some(modified_secs) = file.modified_secs {
+                    c.insert_file_hash(file.path.clone(), *size, modified_secs, hash.clone());
+                }
             }
             let _ = c.save();
         }
@@ -297,37 +257,48 @@ fn compute_full_hash(path: &Path, algorithm: HashAlgorithm) -> Result<String> {
     // Use memory-mapped I/O for files >= 16KB up to 1GB for optimal speed
     if (16 * 1024..=1024 * 1024 * 1024).contains(&len) {
         if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
-            return Ok(match algorithm {
-                HashAlgorithm::Blake3 => blake3::hash(&mmap).to_hex().to_string(),
-                HashAlgorithm::Xxh3_64 => format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&mmap)),
-                HashAlgorithm::Xxh3_128 => format!("{:032x}", xxhash_rust::xxh3::xxh3_128(&mmap)),
-            });
+            return Ok(hash_bytes(&mmap, algorithm));
         }
     }
 
     // Streaming fallback for very large files or when mmap fails
     let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut buffer = [0u8; 64 * 1024];
+
     match algorithm {
         HashAlgorithm::Blake3 => {
             let mut hasher = blake3::Hasher::new();
-            let mut buf = [0u8; 64 * 1024];
             loop {
-                let n = reader.read(&mut buf)?;
-                if n == 0 {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
                     break;
                 }
-                hasher.update(&buf[..n]);
+                hasher.update(&buffer[..read]);
             }
             Ok(hasher.finalize().to_hex().to_string())
         }
         HashAlgorithm::Xxh3_64 | HashAlgorithm::Xxh3_128 => {
-            let mut data = Vec::new();
-            reader.read_to_end(&mut data)?;
-            if algorithm == HashAlgorithm::Xxh3_64 {
-                Ok(format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&data)))
-            } else {
-                Ok(format!("{:032x}", xxhash_rust::xxh3::xxh3_128(&data)))
+            let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
             }
+            Ok(if algorithm == HashAlgorithm::Xxh3_64 {
+                format!("{:016x}", hasher.digest())
+            } else {
+                format!("{:032x}", hasher.digest128())
+            })
         }
+    }
+}
+
+fn hash_bytes(data: &[u8], algorithm: HashAlgorithm) -> String {
+    match algorithm {
+        HashAlgorithm::Blake3 => blake3::hash(data).to_hex().to_string(),
+        HashAlgorithm::Xxh3_64 => format!("{:016x}", xxhash_rust::xxh3::xxh3_64(data)),
+        HashAlgorithm::Xxh3_128 => format!("{:032x}", xxhash_rust::xxh3::xxh3_128(data)),
     }
 }

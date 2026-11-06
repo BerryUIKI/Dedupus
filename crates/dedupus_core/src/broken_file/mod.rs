@@ -1,5 +1,5 @@
 use crate::common::{
-    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+    walk_files, CancellationToken, ProgressCounter, ProgressEvent, ProgressReporter,
 };
 use anyhow::Result;
 use rayon::prelude::*;
@@ -8,7 +8,6 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "gz", "7z", "rar", "bz2", "xz", "zst"];
@@ -72,34 +71,14 @@ impl BrokenFileFinder {
             stage_name: "Discovering files".to_string(),
         });
         let mut broken: Vec<BrokenFile> = Vec::new();
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        let mut total_scanned = 0usize;
-        let mut discovery = DiscoveryThrottle::new();
+        let mut candidates: Vec<(PathBuf, FileKind)> = Vec::new();
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                break;
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    break;
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let completed = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 // Broken symlink: the link itself exists but its target does not.
                 if entry.file_type().is_symlink() {
                     if self.config.check_symlinks && fs::metadata(entry.path()).is_err() {
@@ -110,31 +89,20 @@ impl BrokenFileFinder {
                             reason: "Broken symlink".to_string(),
                         });
                     }
-                    continue;
+                    return;
                 }
 
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
-                total_scanned += 1;
-                if discovery.should_emit() {
-                    on_progress(ProgressEvent::FilesDiscovered {
-                        count: total_scanned,
-                    });
+                if let Some(kind) = classify_file(entry.path(), &self.config) {
+                    candidates.push((entry.path().to_path_buf(), kind));
                 }
+            },
+        );
 
-                if is_checkable(entry.path(), &self.config) {
-                    candidates.push(entry.path().to_path_buf());
-                }
-            }
-        }
-
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_scanned,
-        });
-
-        if self.cancellation_token.is_cancelled() {
+        if !completed {
             return Ok(broken);
         }
 
@@ -150,7 +118,7 @@ impl BrokenFileFinder {
 
         let checked: Vec<BrokenFile> = candidates
             .into_par_iter()
-            .filter_map(|path| {
+            .filter_map(|(path, kind)| {
                 if self.cancellation_token.is_cancelled() {
                     return None;
                 }
@@ -166,7 +134,7 @@ impl BrokenFileFinder {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs());
 
-                let reason = validate_file(&path, &self.config)?;
+                let reason = validate_file(&path, kind)?;
 
                 Some(BrokenFile {
                     path,
@@ -190,60 +158,95 @@ impl BrokenFileFinder {
     }
 }
 
-fn is_checkable(path: &Path, config: &BrokenFileFinderConfig) -> bool {
-    let ext = match path.extension().and_then(OsStr::to_str) {
-        Some(e) => e.to_ascii_lowercase(),
-        None => return false,
-    };
+#[derive(Debug)]
+enum FileKind {
+    Image,
+    Archive(String),
+    Pdf,
+    Audio,
+    Shortcut,
+}
 
-    (config.check_images && IMAGE_EXTENSIONS.contains(&ext.as_str()))
-        || (config.check_archives && (ARCHIVE_EXTENSIONS.contains(&ext.as_str()) || ext == "pdf"))
-        || (config.check_audio && AUDIO_EXTENSIONS.contains(&ext.as_str()))
-        || (config.check_shortcuts && ext == "lnk")
+fn classify_file(path: &Path, config: &BrokenFileFinderConfig) -> Option<FileKind> {
+    let ext = path
+        .extension()
+        .and_then(OsStr::to_str)?
+        .to_ascii_lowercase();
+
+    if config.check_shortcuts && ext == "lnk" {
+        return Some(FileKind::Shortcut);
+    }
+    if config.check_images && IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Some(FileKind::Image);
+    }
+    if config.check_archives {
+        if ARCHIVE_EXTENSIONS.contains(&ext.as_str()) {
+            return Some(FileKind::Archive(ext));
+        }
+        if ext == "pdf" {
+            return Some(FileKind::Pdf);
+        }
+    }
+    if config.check_audio && AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+        return Some(FileKind::Audio);
+    }
+
+    None
 }
 
 /// Returns Some(reason) when the file is broken, None when it looks valid.
-fn validate_file(path: &Path, config: &BrokenFileFinderConfig) -> Option<String> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+/// Files that cannot be opened are left alone (neither broken nor valid).
+fn validate_file(path: &Path, kind: FileKind) -> Option<String> {
+    match kind {
+        FileKind::Shortcut => validate_shortcut(path),
+        FileKind::Image => validate_image(path),
+        FileKind::Archive(ext) => match archive_magic_valid(path, &ext) {
+            Some(true) => None,
+            Some(false) => Some(format!("Invalid archive: bad .{} header", ext)),
+            None => None,
+        },
+        FileKind::Pdf => match header_contains(path, b"%PDF-") {
+            Some(true) => None,
+            Some(false) => Some("Invalid PDF: missing %PDF- header".to_string()),
+            None => None,
+        },
+        FileKind::Audio => validate_audio(path),
+    }
+}
 
-    if config.check_shortcuts && ext == "lnk" {
-        return validate_shortcut(path);
+fn validate_image(path: &Path) -> Option<String> {
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+
+    match reader.decode() {
+        Ok(_) => None,
+        Err(e) => Some(format!("Invalid image: {}", first_line(&e.to_string()))),
+    }
+}
+
+fn validate_audio(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let mss = symphonia::core::io::MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = symphonia::core::probe::Hint::new();
+    if let Some(ext) = path.extension().and_then(OsStr::to_str) {
+        hint.with_extension(ext);
     }
 
-    if config.check_images && IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-        return match image::ImageReader::open(path)
-            .ok()?
-            .with_guessed_format()
-            .ok()?
-            .decode()
-        {
-            Ok(_) => None,
-            Err(e) => Some(format!("Invalid image: {}", first_line(&e.to_string()))),
-        };
-    }
+    let probed = match symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &symphonia::core::formats::FormatOptions::default(),
+        &symphonia::core::meta::MetadataOptions::default(),
+    ) {
+        Ok(probed) => probed,
+        Err(e) => return Some(format!("Invalid audio: {}", first_line(&e.to_string()))),
+    };
 
-    if config.check_archives {
-        if ARCHIVE_EXTENSIONS.contains(&ext.as_str()) {
-            return match archive_magic_valid(path, &ext) {
-                Some(true) => None,
-                Some(false) => Some(format!("Invalid archive: bad .{} header", ext)),
-                None => None, // unreadable; leave it alone
-            };
-        }
-        if ext == "pdf" {
-            return match header_contains(path, b"%PDF-") {
-                Some(true) => None,
-                Some(false) => Some("Invalid PDF: missing %PDF- header".to_string()),
-                None => None,
-            };
-        }
-    }
-
-    if config.check_audio && AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-        return match probe_audio(path) {
-            Ok(()) => None,
-            Err(e) => Some(format!("Invalid audio: {}", first_line(&e))),
-        };
+    if probed.format.tracks().is_empty() {
+        return Some("Invalid audio: no audio tracks".to_string());
     }
 
     None
@@ -283,31 +286,6 @@ fn archive_magic_valid(path: &Path, ext: &str) -> Option<bool> {
 fn header_contains(path: &Path, needle: &[u8]) -> Option<bool> {
     let header = read_header(path, 1024)?;
     Some(header.windows(needle.len()).any(|w| w == needle))
-}
-
-fn probe_audio(path: &Path) -> std::result::Result<(), String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let mss = symphonia::core::io::MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = symphonia::core::probe::Hint::new();
-    if let Some(ext) = path.extension().and_then(OsStr::to_str) {
-        hint.with_extension(ext);
-    }
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &symphonia::core::formats::FormatOptions::default(),
-            &symphonia::core::meta::MetadataOptions::default(),
-        )
-        .map_err(|e| e.to_string())?;
-
-    if probed.format.tracks().is_empty() {
-        return Err("no audio tracks".to_string());
-    }
-
-    Ok(())
 }
 
 /// Validates a Windows `.lnk` shortcut: the file must parse as a shell link,

@@ -1,5 +1,5 @@
 use crate::common::{
-    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+    walk_files, CancellationToken, ProgressCounter, ProgressEvent, ProgressReporter, UnionFind,
 };
 use anyhow::Result;
 use rayon::prelude::*;
@@ -8,13 +8,12 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::audio::Signal;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use walkdir::WalkDir;
 
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a", "aac"];
 
@@ -43,9 +42,9 @@ impl Default for SimilarAudioConfig {
 pub struct ScannedAudio {
     pub path: PathBuf,
     pub size: u64,
-    pub duration_secs: f64,
-    pub sample_rate: u32,
-    pub channels: u32,
+    pub duration_secs: Option<f64>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
     pub fingerprint: [u64; 2], // 128-bit acoustic envelope fingerprint
 }
 
@@ -72,79 +71,44 @@ impl SimilarAudioFinder {
     where
         F: FnMut(ProgressEvent) + Send,
     {
-        if self.cancellation_token.is_cancelled() {
-            return Ok(Vec::new());
-        }
-
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Discovering audio files".to_string(),
         });
 
         let mut candidate_paths = Vec::new();
-        let mut total_discovered = 0;
-        let mut discovery = DiscoveryThrottle::new();
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                return Ok(Vec::new());
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(Vec::new());
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let completed = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
                 let path = entry.path();
-                let is_audio = path
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .map(|ext| {
-                        let lower = ext.to_ascii_lowercase();
-                        SUPPORTED_AUDIO_EXTENSIONS.contains(&lower.as_str())
-                    })
-                    .unwrap_or(false);
-
+                let is_audio = path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+                    SUPPORTED_AUDIO_EXTENSIONS
+                        .iter()
+                        .any(|supported| supported.eq_ignore_ascii_case(ext))
+                });
                 if !is_audio {
-                    continue;
+                    return;
                 }
 
-                if let Ok(metadata) = entry.metadata() {
-                    if metadata.len() >= self.config.min_file_size {
-                        candidate_paths.push((path.to_path_buf(), metadata.len()));
-                        total_discovered += 1;
-                        if discovery.should_emit() {
-                            on_progress(ProgressEvent::FilesDiscovered {
-                                count: total_discovered,
-                            });
-                        }
-                    }
+                let Ok(metadata) = entry.metadata() else {
+                    return;
+                };
+                if metadata.len() < self.config.min_file_size {
+                    return;
                 }
-            }
-        }
 
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_discovered,
-        });
+                candidate_paths.push((path.to_path_buf(), metadata.len()));
+            },
+        );
 
-        if self.cancellation_token.is_cancelled() || candidate_paths.len() < 2 {
+        if !completed || candidate_paths.len() < 2 {
             return Ok(Vec::new());
         }
 
@@ -186,23 +150,7 @@ impl SimilarAudioFinder {
         let max_duration_diff = self.config.max_duration_diff_secs;
         let max_dist = self.config.max_distance;
         let n = scanned_tracks.len();
-        let mut parent: Vec<usize> = (0..n).collect();
-
-        fn find(parent: &mut [usize], mut i: usize) -> usize {
-            while parent[i] != i {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            i
-        }
-
-        fn union(parent: &mut [usize], i: usize, j: usize) {
-            let root_i = find(parent, i);
-            let root_j = find(parent, j);
-            if root_i != root_j {
-                parent[root_i] = root_j;
-            }
-        }
+        let mut disjoint = UnionFind::new(n);
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
@@ -214,15 +162,17 @@ impl SimilarAudioFinder {
             for j in (i + 1)..n {
                 let a2 = &scanned_tracks[j];
 
-                // Check duration similarity
-                if (a1.duration_secs - a2.duration_secs).abs() <= max_duration_diff {
-                    let d0 = (a1.fingerprint[0] ^ a2.fingerprint[0]).count_ones();
-                    let d1 = (a1.fingerprint[1] ^ a2.fingerprint[1]).count_ones();
-                    let distance = d0 + d1;
-
-                    if distance <= max_dist {
-                        union(&mut parent, i, j);
+                // Only reject on duration when both tracks report one.
+                if let (Some(d1), Some(d2)) = (a1.duration_secs, a2.duration_secs) {
+                    if (d1 - d2).abs() > max_duration_diff {
+                        continue;
                     }
+                }
+
+                let d0 = (a1.fingerprint[0] ^ a2.fingerprint[0]).count_ones();
+                let d1 = (a1.fingerprint[1] ^ a2.fingerprint[1]).count_ones();
+                if d0 + d1 <= max_dist {
+                    disjoint.union(i, j);
                 }
             }
         }
@@ -230,7 +180,7 @@ impl SimilarAudioFinder {
         // Group into sets
         let mut clusters: HashMap<usize, Vec<ScannedAudio>> = HashMap::new();
         for (i, audio) in scanned_tracks.into_iter().enumerate() {
-            let root = find(&mut parent, i);
+            let root = disjoint.find(i);
             clusters.entry(root).or_default().push(audio);
         }
 
@@ -243,7 +193,10 @@ impl SimilarAudioFinder {
                 list.sort_by_key(|b| std::cmp::Reverse(b.size));
 
                 SimilarAudioGroup {
-                    similarity_info: format!("Duration ~{:.1}s", list[0].duration_secs),
+                    similarity_info: list[0]
+                        .duration_secs
+                        .map(|duration| format!("Duration ~{:.1}s", duration))
+                        .unwrap_or_else(|| "Similar audio".to_string()),
                     tracks: list,
                 }
             })
@@ -287,28 +240,20 @@ fn analyze_audio(path: &Path, size: u64) -> Result<ScannedAudio> {
         (track.id, track.codec_params.clone())
     };
 
-    let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-    let channels = codec_params.channels.map(|c| c.count() as u32).unwrap_or(2);
-
-    // Calculate duration in seconds
-    let duration_secs = if let Some(n_frames) = codec_params.n_frames {
-        n_frames as f64 / sample_rate as f64
-    } else {
-        // Fallback estimate based on bitrate or default
-        (size as f64 * 8.0) / (128_000.0) // Assume ~128kbps average if unknown
-    };
-
-    let decoder_opts = DecoderOptions::default();
-    let mut decoder = symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
+    let mut sample_rate = codec_params.sample_rate;
+    let mut channels = codec_params.channels.map(|c| c.count() as u32);
 
     // Read up to the first 10 seconds of audio and bucket the per-sample energy
     // into 128 fixed time bins. Bucketing by absolute sample index keeps the
     // envelope independent of container/codec packet framing, so identical or
     // re-encoded tracks at the same sample rate stay comparable.
-    let analysis_samples = (sample_rate as usize) * 10;
+    let analysis_samples = sample_rate.unwrap_or(44_100) as usize * 10;
     let bucket_size = (analysis_samples / 128).max(1);
     let mut energies: [f64; 128] = [0.0; 128];
     let mut samples_seen: usize = 0;
+
+    let decoder_opts = DecoderOptions::default();
+    let mut decoder = symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
 
     while samples_seen < analysis_samples {
         let packet = match probed.format.next_packet() {
@@ -320,34 +265,34 @@ fn analyze_audio(path: &Path, size: u64) -> Result<ScannedAudio> {
         }
 
         let decoded = match decoder.decode(&packet) {
-            Ok(d) => d,
+            Ok(decoded) => decoded,
             Err(_) => break,
         };
 
-        match decoded {
-            AudioBufferRef::F32(buf) => {
-                let plane = buf.chan(0);
-                accumulate_energy(
-                    &mut energies,
-                    &mut samples_seen,
-                    bucket_size,
-                    analysis_samples,
-                    plane.iter().map(|&s| s as f64),
-                );
-            }
-            AudioBufferRef::S16(buf) => {
-                let plane = buf.chan(0);
-                accumulate_energy(
-                    &mut energies,
-                    &mut samples_seen,
-                    bucket_size,
-                    analysis_samples,
-                    plane.iter().map(|&s| s as f64 / 32768.0),
-                );
-            }
-            _ => {}
-        }
+        // Convert every sample format (FLAC is S32, WAV may be S24/S32, ...) to f32.
+        let mut converted = decoded.make_equivalent::<f32>();
+        decoded.convert(&mut converted);
+
+        sample_rate.get_or_insert(converted.spec().rate);
+        channels.get_or_insert(converted.spec().channels.count() as u32);
+
+        accumulate_energy(
+            &mut energies,
+            &mut samples_seen,
+            bucket_size,
+            analysis_samples,
+            converted.chan(0).iter().map(|&s| s as f64),
+        );
     }
+
+    if samples_seen == 0 {
+        return Err(anyhow::anyhow!("No audio samples decoded"));
+    }
+
+    let duration_secs = match (codec_params.n_frames, sample_rate) {
+        (Some(frames), Some(rate)) => Some(frames as f64 / rate as f64),
+        _ => None,
+    };
 
     // Convert energy envelope into 128-bit hash by comparing each slice to median/average
     let total_energy: f64 = energies.iter().sum();

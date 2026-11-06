@@ -22,7 +22,7 @@ struct ScanState {
 
 impl ScanState {
     fn begin(&self) -> Result<CancellationToken, String> {
-        let mut guard = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.token.lock().expect("scan state mutex poisoned");
         if guard.is_some() {
             return Err("A scan is already running".to_string());
         }
@@ -32,18 +32,29 @@ impl ScanState {
     }
 
     fn end(&self) {
-        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.token.lock().expect("scan state mutex poisoned") = None;
     }
 
     fn cancel(&self) {
         if let Some(token) = self
             .token
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("scan state mutex poisoned")
             .as_ref()
         {
             token.cancel();
         }
+    }
+}
+
+/// Clears the active scan even if the scan panics.
+struct ScanGuard<'a> {
+    state: &'a ScanState,
+}
+
+impl Drop for ScanGuard<'_> {
+    fn drop(&mut self) {
+        self.state.end();
     }
 }
 
@@ -55,12 +66,10 @@ struct ScanOutcome<T> {
 }
 
 fn finish_scan<T, E: ToString>(
-    state: &ScanState,
     token: &CancellationToken,
     result: Result<T, E>,
 ) -> Result<ScanOutcome<T>, String> {
     let cancelled = token.is_cancelled();
-    state.end();
     result
         .map(|results| ScanOutcome { results, cancelled })
         .map_err(|error| error.to_string())
@@ -159,9 +168,12 @@ fn scan_duplicates(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = DuplicateFinder::new(config, token.clone());
     let result = finder.find_duplicates(progress_emitter(app, scan_id, "duplicates"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -192,9 +204,12 @@ fn scan_similar_images(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = SimilarImageFinder::new(config, token.clone());
     let result = finder.find_similar_images(progress_emitter(app, scan_id, "similar_images"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -215,9 +230,12 @@ fn scan_similar_audio(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = SimilarAudioFinder::new(config, token.clone());
     let result = finder.find_similar_audio(progress_emitter(app, scan_id, "similar_audio"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -238,9 +256,12 @@ fn scan_similar_videos(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = SimilarVideoFinder::new(config, token.clone());
     let result = finder.find_similar_videos(progress_emitter(app, scan_id, "similar_video"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -257,9 +278,12 @@ fn scan_empty_files(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = EmptyFileFinder::new(config, token.clone());
     let result = finder.find_empty_files(progress_emitter(app, scan_id, "empty_files"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -276,9 +300,12 @@ fn scan_empty_folders(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = EmptyFolderFinder::new(config, token.clone());
     let result = finder.find_empty_folders(progress_emitter(app, scan_id, "empty_folders"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -299,9 +326,12 @@ fn scan_big_files(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = BigFileFinder::new(config, token.clone());
     let result = finder.find_big_files(progress_emitter(app, scan_id, "big_files"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -321,9 +351,12 @@ fn scan_temp_files(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = TempFileFinder::new(config, token.clone());
     let result = finder.find_temp_files(progress_emitter(app, scan_id, "temp_files"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -345,9 +378,12 @@ fn scan_broken_files(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = BrokenFileFinder::new(config, token.clone());
     let result = finder.find_broken_files(progress_emitter(app, scan_id, "broken_files"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command(async)]
@@ -366,9 +402,12 @@ fn scan_bad_extensions(
     };
 
     let token = state.begin()?;
+    let _guard = ScanGuard {
+        state: state.inner(),
+    };
     let finder = BadExtensionFinder::new(config, token.clone());
     let result = finder.find_bad_extensions(progress_emitter(app, scan_id, "bad_extensions"));
-    finish_scan(state.inner(), &token, result)
+    finish_scan(&token, result)
 }
 
 #[tauri::command]
@@ -377,29 +416,25 @@ fn cancel_scan(state: State<'_, ScanState>) {
 }
 
 #[tauri::command]
-fn delete_to_trash(paths: Vec<String>) -> Result<CleanReport, String> {
-    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    Ok(core_move_to_trash(&path_bufs))
+fn delete_to_trash(paths: Vec<PathBuf>) -> CleanReport {
+    core_move_to_trash(&paths)
 }
 
 #[tauri::command]
-fn delete_permanently(paths: Vec<String>) -> Result<CleanReport, String> {
-    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    Ok(core_delete_permanently(&path_bufs))
+fn delete_permanently(paths: Vec<PathBuf>) -> CleanReport {
+    core_delete_permanently(&paths)
 }
 
 #[tauri::command]
-fn replace_with_hardlinks(target: String, duplicates: Vec<String>) -> Result<CleanReport, String> {
-    let target_path = PathBuf::from(target);
-    let dup_paths: Vec<PathBuf> = duplicates.into_iter().map(PathBuf::from).collect();
-    Ok(core_replace_with_hardlinks(&target_path, &dup_paths))
+fn replace_with_hardlinks(target: PathBuf, duplicates: Vec<PathBuf>) -> CleanReport {
+    core_replace_with_hardlinks(&target, &duplicates)
 }
 
 #[tauri::command]
-fn get_cache_stats() -> Result<(usize, usize), String> {
+fn get_cache_stats() -> (usize, usize) {
     let dup_cache = ScanCache::load_or_create("dup_cache");
     let img_cache = ScanCache::load_or_create("img_cache");
-    Ok((dup_cache.file_hashes.len(), img_cache.image_hashes.len()))
+    (dup_cache.file_hashes.len(), img_cache.image_hashes.len())
 }
 
 #[tauri::command]

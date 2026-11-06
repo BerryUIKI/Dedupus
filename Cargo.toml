@@ -29,11 +29,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # Parallelism & Concurrency
 rayon = "1.10"
-crossbeam-channel = "0.5"
 
 # File & I/O
 walkdir = "2.5"
-ignore = "0.4"
 memmap2 = "0.9"
 trash = "5.2"
 dirs = "7.0"
@@ -41,7 +39,6 @@ dirs = "7.0"
 # Serialization & Error handling
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "2.0"
 anyhow = "1.0"
 
 # CLI
@@ -59,7 +56,3 @@ lnk = "0.6"
 
 # Testing
 tempfile = "3.10"
-
-# Logging & Observability
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }

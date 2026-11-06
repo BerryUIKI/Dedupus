@@ -1,13 +1,11 @@
 use crate::common::{
-    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
-    ScannedFile,
+    walk_files, CancellationToken, ProgressCounter, ProgressEvent, ProgressReporter, ScannedFile,
 };
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::PathBuf;
-use walkdir::WalkDir;
 
 /// Extensions that intentionally carry no strong format guarantee.
 /// Files with these names are skipped to avoid noisy false positives.
@@ -189,62 +187,33 @@ impl BadExtensionFinder {
         });
 
         let mut candidates: Vec<ScannedFile> = Vec::new();
-        let mut total_scanned = 0usize;
-        let mut discovery = DiscoveryThrottle::new();
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                return Ok(Vec::new());
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(Vec::new());
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let completed = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
-                }
-
-                total_scanned += 1;
-                if discovery.should_emit() {
-                    on_progress(ProgressEvent::FilesDiscovered {
-                        count: total_scanned,
-                    });
+                    return;
                 }
 
                 let path = entry.path();
                 let Some(extension) = path.extension().and_then(OsStr::to_str) else {
-                    continue;
+                    return;
                 };
                 if GENERIC_EXTENSIONS
                     .iter()
                     .any(|generic| extension.eq_ignore_ascii_case(generic))
                 {
-                    continue;
+                    return;
                 }
 
-                let metadata = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Ok(metadata) = entry.metadata() else {
+                    return;
                 };
-
                 if metadata.len() < self.config.min_file_size {
-                    continue;
+                    return;
                 }
 
                 let modified_secs = metadata
@@ -258,14 +227,10 @@ impl BadExtensionFinder {
                     size: metadata.len(),
                     modified_secs,
                 });
-            }
-        }
+            },
+        );
 
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_scanned,
-        });
-
-        if self.cancellation_token.is_cancelled() {
+        if !completed {
             return Ok(Vec::new());
         }
 

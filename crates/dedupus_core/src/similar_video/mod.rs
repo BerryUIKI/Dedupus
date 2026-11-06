@@ -1,5 +1,5 @@
 use crate::common::{
-    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+    walk_files, CancellationToken, ProgressCounter, ProgressEvent, ProgressReporter, UnionFind,
 };
 use crate::similar_image::compute_dhash;
 use anyhow::Result;
@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use walkdir::WalkDir;
 
 const SUPPORTED_VIDEO_EXTENSIONS: &[&str] =
     &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"];
@@ -68,79 +67,44 @@ impl SimilarVideoFinder {
     where
         F: FnMut(ProgressEvent) + Send,
     {
-        if self.cancellation_token.is_cancelled() {
-            return Ok(Vec::new());
-        }
-
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Discovering video files".to_string(),
         });
 
         let mut candidate_paths = Vec::new();
-        let mut total_discovered = 0;
-        let mut discovery = DiscoveryThrottle::new();
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                return Ok(Vec::new());
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(Vec::new());
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let completed = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
                 let path = entry.path();
-                let is_video = path
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .map(|ext| {
-                        let lower = ext.to_ascii_lowercase();
-                        SUPPORTED_VIDEO_EXTENSIONS.contains(&lower.as_str())
-                    })
-                    .unwrap_or(false);
-
+                let is_video = path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+                    SUPPORTED_VIDEO_EXTENSIONS
+                        .iter()
+                        .any(|supported| supported.eq_ignore_ascii_case(ext))
+                });
                 if !is_video {
-                    continue;
+                    return;
                 }
 
-                if let Ok(metadata) = entry.metadata() {
-                    if metadata.len() >= self.config.min_file_size {
-                        candidate_paths.push((path.to_path_buf(), metadata.len()));
-                        total_discovered += 1;
-                        if discovery.should_emit() {
-                            on_progress(ProgressEvent::FilesDiscovered {
-                                count: total_discovered,
-                            });
-                        }
-                    }
+                let Ok(metadata) = entry.metadata() else {
+                    return;
+                };
+                if metadata.len() < self.config.min_file_size {
+                    return;
                 }
-            }
-        }
 
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_discovered,
-        });
+                candidate_paths.push((path.to_path_buf(), metadata.len()));
+            },
+        );
 
-        if self.cancellation_token.is_cancelled() || candidate_paths.len() < 2 {
+        if !completed || candidate_paths.len() < 2 {
             return Ok(Vec::new());
         }
 
@@ -184,23 +148,7 @@ impl SimilarVideoFinder {
         let max_duration_diff = self.config.max_duration_diff_secs;
         let max_dist = self.config.max_frame_distance;
         let n = scanned_videos.len();
-        let mut parent: Vec<usize> = (0..n).collect();
-
-        fn find(parent: &mut [usize], mut i: usize) -> usize {
-            while parent[i] != i {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            i
-        }
-
-        fn union(parent: &mut [usize], i: usize, j: usize) {
-            let root_i = find(parent, i);
-            let root_j = find(parent, j);
-            if root_i != root_j {
-                parent[root_i] = root_j;
-            }
-        }
+        let mut disjoint = UnionFind::new(n);
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
@@ -212,14 +160,11 @@ impl SimilarVideoFinder {
             for j in (i + 1)..n {
                 let v2 = &scanned_videos[j];
 
-                // 1. Duration check (if duration is known)
-                let duration_matches = match (v1.duration_secs, v2.duration_secs) {
-                    (Some(d1), Some(d2)) => (d1 - d2).abs() <= max_duration_diff,
-                    _ => true,
-                };
-
-                if !duration_matches {
-                    continue;
+                // Only reject on duration when both videos report one.
+                if let (Some(d1), Some(d2)) = (v1.duration_secs, v2.duration_secs) {
+                    if (d1 - d2).abs() > max_duration_diff {
+                        continue;
+                    }
                 }
 
                 // 2. Perceptual frame hash comparison
@@ -233,11 +178,11 @@ impl SimilarVideoFinder {
 
                     let avg_distance = (total_distance / min_frames as u32) as u8;
                     if avg_distance <= max_dist {
-                        union(&mut parent, i, j);
+                        disjoint.union(i, j);
                     }
                 } else if v1.size == v2.size {
                     // Fallback when ffmpeg is not available: matching size + duration
-                    union(&mut parent, i, j);
+                    disjoint.union(i, j);
                 }
             }
         }
@@ -245,7 +190,7 @@ impl SimilarVideoFinder {
         // Group into sets
         let mut clusters: HashMap<usize, Vec<ScannedVideo>> = HashMap::new();
         for (i, video) in scanned_videos.into_iter().enumerate() {
-            let root = find(&mut parent, i);
+            let root = disjoint.find(i);
             clusters.entry(root).or_default().push(video);
         }
 
