@@ -76,6 +76,7 @@ interface DuplicateGroup {
 interface ScannedImage {
   path: string;
   size: number;
+  modified_secs: number | null;
   width: number;
   height: number;
   hash: number;
@@ -89,9 +90,9 @@ interface SimilarImageGroup {
 interface ScannedAudio {
   path: string;
   size: number;
-  duration_secs: number;
-  sample_rate: number;
-  channels: number;
+  duration_secs: number | null;
+  sample_rate: number | null;
+  channels: number | null;
   fingerprint: [number, number];
 }
 
@@ -177,6 +178,10 @@ function formatBytes(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -344,23 +349,13 @@ export default function App() {
   // Set of selected file paths for actions
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [isMaximized, setIsMaximized] = useState(false);
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    try {
-      const saved = localStorage.getItem("dedupus-theme");
-      if (saved === "light" || saved === "dark") return saved;
-    } catch {
-      // ignore
-    }
-    return "light";
-  });
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    localStorage.getItem("dedupus-theme") === "dark" ? "dark" : "light"
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    try {
-      localStorage.setItem("dedupus-theme", theme);
-    } catch {
-      // ignore
-    }
+    localStorage.setItem("dedupus-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -490,7 +485,7 @@ export default function App() {
         setScanPath(selected);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Folder selection failed: ${msg}`);
     }
   };
@@ -727,7 +722,7 @@ export default function App() {
         setStatusMsg(`Scan completed: Found ${res.length} empty folders`);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Scan failed: ${msg}`);
     } finally {
       activeScanId.current = 0;
@@ -745,7 +740,7 @@ export default function App() {
     try {
       await invoke("cancel_scan");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Cancel failed: ${msg}`);
     }
   };
@@ -992,7 +987,7 @@ export default function App() {
     );
 
     if (report.failed.length > 0) {
-      const reason = report.failed[0]?.[1] ?? "unknown error";
+      const reason = report.failed[0][1];
       setStatusMsg((prev) => `${prev} ${report.failed.length} failed: ${reason}`);
     }
   };
@@ -1008,7 +1003,7 @@ export default function App() {
       });
       applyCleanReport(report, "trash");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Trash action failed: ${msg}`);
     } finally {
       setCleaning(false);
@@ -1023,7 +1018,7 @@ export default function App() {
       const report = await invoke<CleanReport>("delete_to_trash", { paths });
       applyCleanReport(report, "trash");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Trash action failed: ${msg}`);
     } finally {
       setCleaning(false);
@@ -1041,7 +1036,8 @@ export default function App() {
         }?\n\nThis bypasses the Recycle Bin and cannot be undone.`,
         { title: "Delete permanently", kind: "warning" }
       );
-    } catch {
+    } catch (err: unknown) {
+      setStatusMsg(`Delete confirmation failed: ${errorMessage(err)}`);
       return;
     }
     if (!confirmed) return;
@@ -1051,7 +1047,7 @@ export default function App() {
       const report = await invoke<CleanReport>("delete_permanently", { paths });
       applyCleanReport(report, "delete");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Permanent delete failed: ${msg}`);
     } finally {
       setCleaning(false);
@@ -1069,7 +1065,8 @@ export default function App() {
         `Replace this duplicate with a hard link to:\n${target}\n\nThe path stays the same and no extra disk space is used. Both files must be on the same volume.`,
         { title: "Replace with hard link", kind: "warning" }
       );
-    } catch {
+    } catch (err: unknown) {
+      setStatusMsg(`Hard link confirmation failed: ${errorMessage(err)}`);
       return;
     }
     if (!confirmed) return;
@@ -1082,7 +1079,7 @@ export default function App() {
       });
       applyCleanReport(report, "hardlink");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Hard link failed: ${msg}`);
     } finally {
       setCleaning(false);
@@ -1094,7 +1091,7 @@ export default function App() {
     try {
       await openPath(path);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Open failed: ${msg}`);
     }
   };
@@ -1104,7 +1101,7 @@ export default function App() {
     try {
       await revealItemInDir(path);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Reveal failed: ${msg}`);
     }
   };
@@ -1115,7 +1112,7 @@ export default function App() {
       await navigator.clipboard.writeText(path);
       setStatusMsg("Path copied to clipboard.");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Copy failed: ${msg}`);
     }
   };
@@ -1125,7 +1122,7 @@ export default function App() {
       await invoke("clear_cache");
       setStatusMsg("✨ Scan cache cleared.");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setStatusMsg(`Clear cache failed: ${msg}`);
     }
   };
@@ -1594,7 +1591,7 @@ export default function App() {
                               className="icon-action-btn"
                               title="Copy path"
                               onClick={() =>
-                                navigator.clipboard.writeText(file.path)
+                                handleCopyPath(file.path)
                               }
                             >
                               <Copy size={14} />
@@ -1676,7 +1673,7 @@ export default function App() {
                             className="icon-action-btn"
                             title="Copy path"
                             onClick={() =>
-                              navigator.clipboard.writeText(img.path)
+                              handleCopyPath(img.path)
                             }
                           >
                             <Copy size={14} />
@@ -1743,10 +1740,15 @@ export default function App() {
                         </label>
                         <div className="image-meta">
                           <span className="res-badge">
-                            {track.duration_secs.toFixed(1)}s
+                            {track.duration_secs != null
+                              ? `${track.duration_secs.toFixed(1)}s`
+                              : "Duration ?"}
                           </span>
                           <span className="res-badge">
-                            {track.sample_rate}Hz ({track.channels}ch)
+                            {track.sample_rate != null
+                              ? `${track.sample_rate}Hz`
+                              : "?Hz"}{" "}
+                            ({track.channels != null ? `${track.channels}ch` : "?ch"})
                           </span>
                           <span className="size-badge">
                             {formatBytes(track.size)}
@@ -1755,7 +1757,7 @@ export default function App() {
                             className="icon-action-btn"
                             title="Copy path"
                             onClick={() =>
-                              navigator.clipboard.writeText(track.path)
+                              handleCopyPath(track.path)
                             }
                           >
                             <Copy size={14} />
@@ -1835,7 +1837,7 @@ export default function App() {
                             className="icon-action-btn"
                             title="Copy path"
                             onClick={() =>
-                              navigator.clipboard.writeText(vid.path)
+                              handleCopyPath(vid.path)
                             }
                           >
                             <Copy size={14} />
@@ -1895,7 +1897,7 @@ export default function App() {
                       className="icon-action-btn"
                       title="Copy path"
                       onClick={() =>
-                        navigator.clipboard.writeText(file.path)
+                        handleCopyPath(file.path)
                       }
                     >
                       <Copy size={14} />
@@ -1949,7 +1951,7 @@ export default function App() {
                       className="icon-action-btn"
                       title="Copy path"
                       onClick={() =>
-                        navigator.clipboard.writeText(file.path)
+                        handleCopyPath(file.path)
                       }
                     >
                       <Copy size={14} />
@@ -2003,7 +2005,7 @@ export default function App() {
                       className="icon-action-btn"
                       title="Copy path"
                       onClick={() =>
-                        navigator.clipboard.writeText(file.path)
+                        handleCopyPath(file.path)
                       }
                     >
                       <Copy size={14} />
@@ -2063,7 +2065,7 @@ export default function App() {
                       className="icon-action-btn"
                       title="Copy path"
                       onClick={() =>
-                        navigator.clipboard.writeText(file.path)
+                        handleCopyPath(file.path)
                       }
                     >
                       <Copy size={14} />

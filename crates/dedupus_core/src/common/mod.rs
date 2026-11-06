@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use walkdir::{DirEntry, WalkDir};
 
 /// Supported hashing algorithms for duplicate detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -68,14 +70,14 @@ impl<F: FnMut(ProgressEvent)> ProgressReporter<F> {
     }
 
     pub fn report(&self, event: ProgressEvent) {
-        let mut callback = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let mut callback = self.callback.lock().expect("progress callback panicked");
         callback(event);
     }
 
     pub fn into_inner(self) -> F {
         self.callback
             .into_inner()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("progress callback panicked")
     }
 }
 
@@ -111,7 +113,7 @@ impl ProgressCounter {
 /// Time-based throttle for discovery progress: keeps the file counter live
 /// without emitting an IPC/CLI update for every single walked entry.
 pub struct DiscoveryThrottle {
-    last_emit: std::time::Instant,
+    last_emit: Option<Instant>,
 }
 
 impl Default for DiscoveryThrottle {
@@ -122,18 +124,99 @@ impl Default for DiscoveryThrottle {
 
 impl DiscoveryThrottle {
     pub fn new() -> Self {
-        Self {
-            // Emit the first update immediately.
-            last_emit: std::time::Instant::now() - std::time::Duration::from_millis(250),
-        }
+        Self { last_emit: None }
     }
 
     pub fn should_emit(&mut self) -> bool {
-        if self.last_emit.elapsed() >= std::time::Duration::from_millis(120) {
-            self.last_emit = std::time::Instant::now();
-            true
-        } else {
-            false
+        let now = Instant::now();
+        match self.last_emit {
+            Some(last) if now.duration_since(last) < Duration::from_millis(120) => false,
+            _ => {
+                self.last_emit = Some(now);
+                true
+            }
+        }
+    }
+}
+
+/// Walks every directory, skipping excluded subtrees and stopping when the
+/// token is cancelled. `on_entry` is called for every entry; the caller decides
+/// which entries to keep. Returns `false` when the walk was cancelled.
+pub fn walk_files<F>(
+    directories: &[PathBuf],
+    excluded_directories: &[PathBuf],
+    token: &CancellationToken,
+    on_progress: &mut impl FnMut(ProgressEvent),
+    mut on_entry: F,
+) -> bool
+where
+    F: FnMut(&DirEntry),
+{
+    let mut total_scanned = 0usize;
+    let mut discovery = DiscoveryThrottle::new();
+
+    for dir in directories {
+        if token.is_cancelled() {
+            return false;
+        }
+
+        on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
+
+        for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
+            !excluded_directories
+                .iter()
+                .any(|ex| e.path().starts_with(ex))
+        }) {
+            if token.is_cancelled() {
+                return false;
+            }
+
+            let Ok(entry) = entry else { continue };
+
+            if entry.file_type().is_file() {
+                total_scanned += 1;
+                if discovery.should_emit() {
+                    on_progress(ProgressEvent::FilesDiscovered {
+                        count: total_scanned,
+                    });
+                }
+            }
+
+            on_entry(&entry);
+        }
+    }
+
+    on_progress(ProgressEvent::FilesDiscovered {
+        count: total_scanned,
+    });
+    true
+}
+
+/// Disjoint-set forest used to cluster near-matching items.
+pub struct UnionFind {
+    parent: Vec<usize>,
+}
+
+impl UnionFind {
+    pub fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+        }
+    }
+
+    pub fn find(&mut self, mut index: usize) -> usize {
+        while self.parent[index] != index {
+            self.parent[index] = self.parent[self.parent[index]];
+            index = self.parent[index];
+        }
+        index
+    }
+
+    pub fn union(&mut self, a: usize, b: usize) {
+        let root_a = self.find(a);
+        let root_b = self.find(b);
+        if root_a != root_b {
+            self.parent[root_a] = root_b;
         }
     }
 }

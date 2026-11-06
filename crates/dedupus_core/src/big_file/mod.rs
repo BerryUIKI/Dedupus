@@ -1,8 +1,7 @@
-use crate::common::{CancellationToken, DiscoveryThrottle, ProgressEvent, ScannedFile};
+use crate::common::{walk_files, CancellationToken, ProgressEvent, ScannedFile};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BigFileFinderConfig {
@@ -43,57 +42,28 @@ impl BigFileFinder {
         F: FnMut(ProgressEvent),
     {
         let mut found: Vec<ScannedFile> = Vec::new();
-        let mut total_scanned = 0usize;
-        let mut discovery = DiscoveryThrottle::new();
 
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Finding big files".to_string(),
         });
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                break;
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    break;
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let _ = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
-                let metadata = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Ok(metadata) = entry.metadata() else {
+                    return;
                 };
 
                 let size = metadata.len();
-                total_scanned += 1;
-
-                if discovery.should_emit() {
-                    on_progress(ProgressEvent::FilesDiscovered {
-                        count: total_scanned,
-                    });
-                }
-
                 if size < self.config.min_file_size {
-                    continue;
+                    return;
                 }
 
                 let modified_secs = metadata
@@ -107,18 +77,11 @@ impl BigFileFinder {
                     size,
                     modified_secs,
                 });
-            }
-        }
-
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_scanned,
-        });
+            },
+        );
 
         found.sort_by_key(|f| std::cmp::Reverse(f.size));
-
-        if found.len() > self.config.max_results {
-            found.truncate(self.config.max_results);
-        }
+        found.truncate(self.config.max_results);
 
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Big file search finished".to_string(),

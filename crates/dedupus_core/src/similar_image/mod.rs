@@ -1,5 +1,5 @@
 use crate::common::{
-    CancellationToken, DiscoveryThrottle, ProgressCounter, ProgressEvent, ProgressReporter,
+    walk_files, CancellationToken, ProgressCounter, ProgressEvent, ProgressReporter, UnionFind,
 };
 use anyhow::Result;
 use image::imageops::FilterType;
@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
 
@@ -47,6 +46,7 @@ impl Default for SimilarImageConfig {
 pub struct ScannedImage {
     pub path: PathBuf,
     pub size: u64,
+    pub modified_secs: Option<u64>,
     pub width: u32,
     pub height: u32,
     pub hash: u64,
@@ -76,86 +76,50 @@ impl SimilarImageFinder {
     where
         F: FnMut(ProgressEvent) + Send,
     {
-        if self.cancellation_token.is_cancelled() {
-            return Ok(Vec::new());
-        }
-
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Discovering image files".to_string(),
         });
 
         let mut candidate_paths = Vec::new();
-        let mut total_discovered = 0;
-        let mut discovery = DiscoveryThrottle::new();
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                return Ok(Vec::new());
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(Vec::new());
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let completed = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
                 let path = entry.path();
-                let is_image = path
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .map(|ext| {
-                        let lower = ext.to_ascii_lowercase();
-                        SUPPORTED_EXTENSIONS.contains(&lower.as_str())
-                    })
-                    .unwrap_or(false);
-
+                let is_image = path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+                    SUPPORTED_EXTENSIONS
+                        .iter()
+                        .any(|supported| supported.eq_ignore_ascii_case(ext))
+                });
                 if !is_image {
-                    continue;
+                    return;
                 }
 
-                if let Ok(metadata) = entry.metadata() {
-                    if metadata.len() >= self.config.min_file_size {
-                        let modified_secs = metadata
-                            .modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
-
-                        candidate_paths.push((path.to_path_buf(), metadata.len(), modified_secs));
-                        total_discovered += 1;
-                        if discovery.should_emit() {
-                            on_progress(ProgressEvent::FilesDiscovered {
-                                count: total_discovered,
-                            });
-                        }
-                    }
+                let Ok(metadata) = entry.metadata() else {
+                    return;
+                };
+                if metadata.len() < self.config.min_file_size {
+                    return;
                 }
-            }
-        }
 
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_discovered,
-        });
+                let modified_secs = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
 
-        if self.cancellation_token.is_cancelled() || candidate_paths.len() < 2 {
+                candidate_paths.push((path.to_path_buf(), metadata.len(), modified_secs));
+            },
+        );
+
+        if !completed || candidate_paths.len() < 2 {
             return Ok(Vec::new());
         }
 
@@ -187,13 +151,13 @@ impl SimilarImageFinder {
                     reporter.report(ProgressEvent::HashingProgress { processed, total });
                 }
 
-                if let Some(c) = &cache {
-                    if let Some((width, height, hash)) =
-                        c.get_image_hash(&path, size, modified_secs)
+                if let (Some(cache), Some(modified)) = (&cache, modified_secs) {
+                    if let Some((width, height, hash)) = cache.get_image_hash(&path, size, modified)
                     {
                         return Some(ScannedImage {
                             path,
                             size,
+                            modified_secs,
                             width,
                             height,
                             hash,
@@ -205,6 +169,7 @@ impl SimilarImageFinder {
                     Ok((width, height, hash)) => Some(ScannedImage {
                         path,
                         size,
+                        modified_secs,
                         width,
                         height,
                         hash,
@@ -219,23 +184,16 @@ impl SimilarImageFinder {
         // Update and save cache with newly computed image hashes
         if let Some(mut c) = cache {
             for img in &hashed_images {
-                let modified_secs = img
-                    .path
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-
-                c.insert_image_hash(
-                    img.path.clone(),
-                    img.size,
-                    modified_secs,
-                    img.width,
-                    img.height,
-                    img.hash,
-                );
+                if let Some(modified_secs) = img.modified_secs {
+                    c.insert_image_hash(
+                        img.path.clone(),
+                        img.size,
+                        modified_secs,
+                        img.width,
+                        img.height,
+                        img.hash,
+                    );
+                }
             }
             let _ = c.save();
         }
@@ -251,26 +209,8 @@ impl SimilarImageFinder {
         // --- STAGE 3: Clustering using Disjoint Set (Union-Find) ---
         let max_dist = self.config.max_hamming_distance;
         let n = hashed_images.len();
-        let mut parent: Vec<usize> = (0..n).collect();
+        let mut disjoint = UnionFind::new(n);
 
-        fn find(parent: &mut [usize], mut i: usize) -> usize {
-            while parent[i] != i {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            i
-        }
-
-        fn union(parent: &mut [usize], i: usize, j: usize) {
-            let root_i = find(parent, i);
-            let root_j = find(parent, j);
-            if root_i != root_j {
-                parent[root_i] = root_j;
-            }
-        }
-
-        // Parallel or sequential pairwise distance calculation
-        // For N <= 10000, N^2 / 2 comparisons of u64 XOR is < 50M ops (fractions of a second)
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             if self.cancellation_token.is_cancelled() {
@@ -278,10 +218,9 @@ impl SimilarImageFinder {
             }
             let h1 = hashed_images[i].hash;
             for j in (i + 1)..n {
-                let h2 = hashed_images[j].hash;
-                let distance = (h1 ^ h2).count_ones() as u8;
+                let distance = (h1 ^ hashed_images[j].hash).count_ones() as u8;
                 if distance <= max_dist {
-                    union(&mut parent, i, j);
+                    disjoint.union(i, j);
                 }
             }
         }
@@ -289,10 +228,11 @@ impl SimilarImageFinder {
         // Group into sets
         let mut clusters: HashMap<usize, Vec<ScannedImage>> = HashMap::new();
         for (i, img) in hashed_images.into_iter().enumerate() {
-            let root = find(&mut parent, i);
+            let root = disjoint.find(i);
             clusters.entry(root).or_default().push(img);
         }
 
+        let similarity_level = format!("Max Distance: {}", max_dist);
         // Keep clusters with >= 2 images
         let mut groups: Vec<SimilarImageGroup> = clusters
             .into_values()
@@ -306,7 +246,7 @@ impl SimilarImageFinder {
                 });
 
                 SimilarImageGroup {
-                    similarity_level: format!("Max Distance: {}", max_dist),
+                    similarity_level: similarity_level.clone(),
                     images: list,
                 }
             })

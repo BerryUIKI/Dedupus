@@ -1,8 +1,7 @@
-use crate::common::{CancellationToken, DiscoveryThrottle, ProgressEvent};
+use crate::common::{walk_files, CancellationToken, ProgressEvent};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 /// Extensions commonly used for temporary, backup and partial-download files.
 pub const DEFAULT_TEMP_EXTENSIONS: &[&str] = &[
@@ -65,8 +64,6 @@ impl TempFileFinder {
         F: FnMut(ProgressEvent),
     {
         let mut found: Vec<TempFile> = Vec::new();
-        let mut total_scanned = 0usize;
-        let mut discovery = DiscoveryThrottle::new();
 
         on_progress(ProgressEvent::StageCompleted {
             stage_name: "Searching temporary files".to_string(),
@@ -78,54 +75,26 @@ impl TempFileFinder {
             .collect();
         extensions.extend(self.config.extra_extensions.iter().cloned());
 
-        for dir in &self.config.included_directories {
-            if self.cancellation_token.is_cancelled() {
-                break;
-            }
-
-            on_progress(ProgressEvent::ScanningDirectory { path: dir.clone() });
-
-            for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
-                let path = e.path();
-                !self
-                    .config
-                    .excluded_directories
-                    .iter()
-                    .any(|ex| path.starts_with(ex))
-            }) {
-                if self.cancellation_token.is_cancelled() {
-                    break;
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
+        let _ = walk_files(
+            &self.config.included_directories,
+            &self.config.excluded_directories,
+            &self.cancellation_token,
+            &mut on_progress,
+            |entry| {
                 if !entry.file_type().is_file() {
-                    continue;
+                    return;
                 }
 
                 let path = entry.path();
-                total_scanned += 1;
-                if discovery.should_emit() {
-                    on_progress(ProgressEvent::FilesDiscovered {
-                        count: total_scanned,
-                    });
-                }
-
-                let reason = match classify_temp_file(path, &extensions) {
-                    Some(r) => r,
-                    None => continue,
+                let Some(reason) = classify_temp_file(path, &extensions) else {
+                    return;
                 };
 
-                let metadata = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Ok(metadata) = entry.metadata() else {
+                    return;
                 };
-
                 if metadata.len() < self.config.min_file_size {
-                    continue;
+                    return;
                 }
 
                 let modified_secs = metadata
@@ -140,12 +109,8 @@ impl TempFileFinder {
                     modified_secs,
                     reason,
                 });
-            }
-        }
-
-        on_progress(ProgressEvent::FilesDiscovered {
-            count: total_scanned,
-        });
+            },
+        );
 
         found.sort_by_key(|f| std::cmp::Reverse(f.size));
 

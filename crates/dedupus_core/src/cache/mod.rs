@@ -21,14 +21,14 @@ pub struct CachedImageEntry {
     pub hash: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanCache {
     /// Maps full path -> cached file hash
     pub file_hashes: HashMap<PathBuf, CachedFileEntry>,
     /// Maps full path -> cached perceptual image hash
     pub image_hashes: HashMap<PathBuf, CachedImageEntry>,
     #[serde(skip)]
-    custom_path: Option<PathBuf>,
+    custom_path: PathBuf,
 }
 
 impl ScanCache {
@@ -40,42 +40,39 @@ impl ScanCache {
         base_dir.join(format!("{}.json", name))
     }
 
+    fn empty(path: PathBuf) -> Self {
+        Self {
+            file_hashes: HashMap::new(),
+            image_hashes: HashMap::new(),
+            custom_path: path,
+        }
+    }
+
     /// Load cache from disk if it exists, or returns empty cache
     pub fn load_or_create(name: &str) -> Self {
         let path = Self::default_cache_path(name);
-        Self::load_from_path(&path).unwrap_or_else(|_| Self {
-            custom_path: Some(path),
-            ..Default::default()
-        })
+        Self::load_from_path(&path).unwrap_or_else(|_| Self::empty(path))
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(Self {
-                custom_path: Some(path.to_path_buf()),
-                ..Default::default()
-            });
+            return Ok(Self::empty(path.to_path_buf()));
         }
 
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut cache: Self = serde_json::from_reader(reader)?;
-        cache.custom_path = Some(path.to_path_buf());
+        cache.custom_path = path.to_path_buf();
         Ok(cache)
     }
 
     /// Save cache to disk
     pub fn save(&self) -> Result<()> {
-        let path = self
-            .custom_path
-            .clone()
-            .unwrap_or_else(|| Self::default_cache_path("scan_cache"));
-
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = self.custom_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let file = File::create(&path)?;
+        let file = File::create(&self.custom_path)?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, self)?;
         Ok(())
@@ -149,10 +146,8 @@ impl ScanCache {
     pub fn clear(&mut self) -> Result<()> {
         self.file_hashes.clear();
         self.image_hashes.clear();
-        if let Some(path) = &self.custom_path {
-            if path.exists() {
-                fs::remove_file(path)?;
-            }
+        if self.custom_path.exists() {
+            fs::remove_file(&self.custom_path)?;
         }
         Ok(())
     }

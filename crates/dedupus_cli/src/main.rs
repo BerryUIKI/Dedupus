@@ -34,6 +34,40 @@ impl From<CliHashAlgo> for HashAlgorithm {
     }
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+enum CliImageAlgo {
+    #[default]
+    Gradient,
+    Average,
+}
+
+impl From<CliImageAlgo> for ImageHashAlgorithm {
+    fn from(algo: CliImageAlgo) -> Self {
+        match algo {
+            CliImageAlgo::Gradient => ImageHashAlgorithm::Gradient,
+            CliImageAlgo::Average => ImageHashAlgorithm::Average,
+        }
+    }
+}
+
+fn print_progress(event: ProgressEvent) {
+    match event {
+        ProgressEvent::ScanningDirectory { path } => {
+            println!("📂 Scanning: {}", path.display());
+        }
+        ProgressEvent::FilesDiscovered { count } => {
+            println!("📄 Discovered {} files...", count);
+        }
+        ProgressEvent::HashingStarted { total_files } => {
+            println!("⚡ Processing {} candidate files...", total_files);
+        }
+        ProgressEvent::StageCompleted { stage_name } => {
+            println!("✅ Stage: {}", stage_name);
+        }
+        ProgressEvent::HashingProgress { .. } => {}
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum CacheAction {
     /// Show cached hash statistics
@@ -87,9 +121,9 @@ enum Commands {
         #[arg(short, long, default_value_t = 4)]
         distance: u8,
 
-        /// Perceptual algorithm: gradient (dHash) or average (aHash)
-        #[arg(short, long, default_value = "gradient")]
-        algo: String,
+        /// Perceptual algorithm
+        #[arg(short, long, value_enum, default_value_t = CliImageAlgo::Gradient)]
+        algo: CliImageAlgo,
 
         /// Disable hash caching
         #[arg(long)]
@@ -267,21 +301,7 @@ fn main() -> Result<()> {
             };
 
             let finder = DuplicateFinder::new(config, token);
-            let duplicates = finder.find_duplicates(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("📄 Discovered {} files...", count);
-                }
-                ProgressEvent::HashingStarted { total_files } => {
-                    println!("⚡ Computing hashes for {} candidate files...", total_files);
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let duplicates = finder.find_duplicates(print_progress)?;
 
             println!(
                 "\n🎉 Found {} groups of duplicate files:\n",
@@ -312,40 +332,17 @@ fn main() -> Result<()> {
         } => {
             println!("🖼️ Scanning for similar images in: {:?}", directories);
 
-            let hash_algorithm = if algo.to_lowercase() == "average" {
-                ImageHashAlgorithm::Average
-            } else {
-                ImageHashAlgorithm::Gradient
-            };
-
             let config = SimilarImageConfig {
                 included_directories: directories,
                 excluded_directories: exclude,
                 max_hamming_distance: distance,
-                hash_algorithm,
+                hash_algorithm: algo.into(),
                 min_file_size: 1024,
                 use_cache: !no_cache,
             };
 
             let finder = SimilarImageFinder::new(config, token);
-            let groups = finder.find_similar_images(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("🖼️ Discovered {} image files...", count);
-                }
-                ProgressEvent::HashingStarted { total_files } => {
-                    println!(
-                        "⚡ Computing perceptual hashes for {} images...",
-                        total_files
-                    );
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let groups = finder.find_similar_images(print_progress)?;
 
             println!("\n🎉 Found {} groups of similar images:\n", groups.len());
             for (idx, group) in groups.iter().enumerate() {
@@ -379,24 +376,7 @@ fn main() -> Result<()> {
             };
 
             let finder = dedupus_core::SimilarAudioFinder::new(config, token);
-            let groups = finder.find_similar_audio(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("🎵 Discovered {} audio files...", count);
-                }
-                ProgressEvent::HashingStarted { total_files } => {
-                    println!(
-                        "⚡ Computing acoustic fingerprints for {} audio files...",
-                        total_files
-                    );
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let groups = finder.find_similar_audio(print_progress)?;
 
             println!(
                 "\n🎉 Found {} groups of similar audio tracks:\n",
@@ -405,12 +385,24 @@ fn main() -> Result<()> {
             for (idx, group) in groups.iter().enumerate() {
                 println!("Group #{} [{}]:", idx + 1, group.similarity_info);
                 for track in &group.tracks {
+                    let duration = track
+                        .duration_secs
+                        .map(|value| format!("{value:.1}s"))
+                        .unwrap_or_else(|| "?s".to_string());
+                    let sample_rate = track
+                        .sample_rate
+                        .map(|value| format!("{value}Hz"))
+                        .unwrap_or_else(|| "?Hz".to_string());
+                    let channels = track
+                        .channels
+                        .map(|value| format!("{value}ch"))
+                        .unwrap_or_else(|| "?ch".to_string());
                     println!(
-                        "  - {} [{:.1}s, {}Hz, {}ch, {} bytes]",
+                        "  - {} [{}, {}, {}, {} bytes]",
                         track.path.display(),
-                        track.duration_secs,
-                        track.sample_rate,
-                        track.channels,
+                        duration,
+                        sample_rate,
+                        channels,
                         track.size
                     );
                 }
@@ -433,24 +425,7 @@ fn main() -> Result<()> {
             };
 
             let finder = dedupus_core::SimilarVideoFinder::new(config, token);
-            let groups = finder.find_similar_videos(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("🎬 Discovered {} video files...", count);
-                }
-                ProgressEvent::HashingStarted { total_files } => {
-                    println!(
-                        "⚡ Extracting keyframe hashes for {} videos...",
-                        total_files
-                    );
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let groups = finder.find_similar_videos(print_progress)?;
 
             println!("\n🎉 Found {} groups of similar videos:\n", groups.len());
             for (idx, group) in groups.iter().enumerate() {
@@ -524,18 +499,7 @@ fn main() -> Result<()> {
                 max_results: limit,
             };
             let finder = dedupus_core::BigFileFinder::new(config, token);
-            let files = finder.find_big_files(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("📄 Scanned {} files...", count);
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let files = finder.find_big_files(print_progress)?;
 
             let total: u64 = files.iter().map(|f| f.size).sum();
             println!(
@@ -570,18 +534,7 @@ fn main() -> Result<()> {
                     .collect(),
             };
             let finder = dedupus_core::TempFileFinder::new(config, token);
-            let found = finder.find_temp_files(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("📄 Scanned {} files...", count);
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let found = finder.find_temp_files(print_progress)?;
 
             let total: u64 = found.iter().map(|f| f.size).sum();
             println!(
@@ -618,18 +571,7 @@ fn main() -> Result<()> {
                 check_shortcuts: !no_shortcuts,
             };
             let finder = dedupus_core::BrokenFileFinder::new(config, token);
-            let broken = finder.find_broken_files(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("📄 Scanned {} files...", count);
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let broken = finder.find_broken_files(print_progress)?;
 
             println!("\nFound {} broken files:", broken.len());
             for f in &broken {
@@ -657,18 +599,7 @@ fn main() -> Result<()> {
                 min_file_size: min_size,
             };
             let finder = dedupus_core::BadExtensionFinder::new(config, token);
-            let found = finder.find_bad_extensions(|event| match event {
-                ProgressEvent::ScanningDirectory { path } => {
-                    println!("📂 Scanning: {}", path.display());
-                }
-                ProgressEvent::FilesDiscovered { count } => {
-                    println!("📄 Scanned {} files...", count);
-                }
-                ProgressEvent::StageCompleted { stage_name } => {
-                    println!("✅ Stage: {}", stage_name);
-                }
-                _ => {}
-            })?;
+            let found = finder.find_bad_extensions(print_progress)?;
 
             println!("\nFound {} files with mismatched extensions:", found.len());
             for f in &found {
@@ -725,8 +656,8 @@ fn main() -> Result<()> {
                 let mut img_cache = ScanCache::load_or_create("img_cache");
                 let pruned_dup = dup_cache.prune_missing();
                 let pruned_img = img_cache.prune_missing();
-                let _ = dup_cache.save();
-                let _ = img_cache.save();
+                dup_cache.save()?;
+                img_cache.save()?;
                 println!(
                     "🧹 Pruned {} missing file hashes and {} missing image hashes.",
                     pruned_dup, pruned_img
